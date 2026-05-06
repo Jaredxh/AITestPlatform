@@ -1534,7 +1534,7 @@ bash scripts/release.sh v1.2.0
 ---
 
 ## 📞 交流与反馈
-
+- 体验地址：http://49.232.246.119:7080/login     admin/admin123
 
 - **GitHub Issues**：Bug / 功能请求 / 部署问题 → 直接提 issue（建议先看 [§排错速查](#-排错速查)）
 - **GitHub Discussions**：架构讨论 / 用法咨询 / 经验分享
