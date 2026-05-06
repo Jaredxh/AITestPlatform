@@ -1,4 +1,4 @@
-name: Build and Push to GHCR
+name: Build and Push to GHCR (+ optional Aliyun ACR)
 
 # 触发条件：
 #  1. push 到 main 分支          → 推 :latest + :main + :sha-<7位>
@@ -7,10 +7,16 @@ name: Build and Push to GHCR
 #  4. workflow_dispatch（手动）  → 推自定义 tag
 #
 # 镜像地址：
-#  ghcr.io/<owner>/aitestplatform-backend:<tag>
+#  ghcr.io/<owner>/aitestplatform-backend:<tag>            # 默认 GHCR
 #  ghcr.io/<owner>/aitestplatform-frontend:<tag>
 #
-# 首次发布前必读：见 docs/DEPLOYMENT_GHCR.md
+# 同步推送到阿里云 ACR（国内秒级拉取）：
+#  仅当 GitHub 仓库 Settings → Secrets 配置了 ACR_REGISTRY / ACR_NAMESPACE / ACR_USERNAME / ACR_PASSWORD
+#  这 4 个 Secrets 时，本 workflow 会一次 build → 同时 push 到 GHCR + ACR。
+#  未配置时自动跳过 ACR 步骤，原 GHCR 流程不受影响。
+#
+#  ACR 地址示例（个人版）：crpi-xxxx.cn-beijing.personal.cr.aliyuncs.com
+#  完整教程见 docs/DEPLOYMENT_GHCR.md §阿里云 ACR 同步
 
 on:
   push:
@@ -29,6 +35,9 @@ env:
   REGISTRY: ghcr.io
   # 镜像 owner 用 lowercase（GHCR 要求小写，github.repository_owner 可能含大写）
   IMAGE_OWNER_LC: ${{ github.repository_owner }}
+  # 把 ACR 配置从 secrets 提到 env，便于 step level if 判断（GHA 不支持 if 直接读 secrets）
+  ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+  ACR_NAMESPACE: ${{ secrets.ACR_NAMESPACE }}
 
 jobs:
   build:
@@ -77,11 +86,40 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 仅当配置了 ACR_* 4 个 Secrets 时才登录 ACR，否则跳过（保持兼容）
+      - name: Log in to Aliyun ACR
+        if: github.event_name != 'pull_request' && env.ACR_REGISTRY != ''
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_REGISTRY }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      # 动态拼接镜像目标列表：默认仅 GHCR；配置了 ACR 时同时输出 ACR 地址。
+      # docker/metadata-action 支持 images 多行，每行一个 registry，会给每个 tag 同时打上两套镜像名。
+      - name: Compute image targets
+        id: targets
+        run: |
+          IMAGES="${{ env.REGISTRY }}/${{ env.IMAGE_OWNER_LC }}/aitestplatform-${{ matrix.service }}"
+          if [ -n "${{ env.ACR_REGISTRY }}" ] && [ -n "${{ env.ACR_NAMESPACE }}" ]; then
+            IMAGES="${IMAGES}
+          ${{ env.ACR_REGISTRY }}/${{ env.ACR_NAMESPACE }}/aitestplatform-${{ matrix.service }}"
+            echo "ACR 同步已启用：${{ env.ACR_REGISTRY }}/${{ env.ACR_NAMESPACE }}"
+          else
+            echo "ACR 未配置，仅推送 GHCR"
+          fi
+          {
+            echo "images<<EOF"
+            echo "${IMAGES}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Extract metadata (tags, labels)
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER_LC }}/aitestplatform-${{ matrix.service }}
+          # 多 registry 时，每行一个；metadata-action 会给每个 tag 同时打上多套镜像名
+          images: ${{ steps.targets.outputs.images }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -119,7 +157,10 @@ jobs:
           {
             echo "## :rocket: ${{ matrix.service }} 推送成功"
             echo ""
-            echo "**镜像地址：** \`${{ env.REGISTRY }}/${{ env.IMAGE_OWNER_LC }}/aitestplatform-${{ matrix.service }}\`"
+            echo "**GHCR 镜像：** \`${{ env.REGISTRY }}/${{ env.IMAGE_OWNER_LC }}/aitestplatform-${{ matrix.service }}\`"
+            if [ -n "${{ env.ACR_REGISTRY }}" ] && [ -n "${{ env.ACR_NAMESPACE }}" ]; then
+              echo "**ACR 镜像：** \`${{ env.ACR_REGISTRY }}/${{ env.ACR_NAMESPACE }}/aitestplatform-${{ matrix.service }}\`（国内秒级）"
+            fi
             echo ""
             echo "**本次 tag：**"
             echo '```'
@@ -128,6 +169,13 @@ jobs:
             echo ""
             echo "**服务器拉取命令：**"
             echo '```bash'
+            echo "# GHCR（海外/有代理）"
             echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER_LC }}/aitestplatform-${{ matrix.service }}:latest"
+            if [ -n "${{ env.ACR_REGISTRY }}" ] && [ -n "${{ env.ACR_NAMESPACE }}" ]; then
+              echo ""
+              echo "# 阿里云 ACR（国内服务器推荐）"
+              echo "docker login ${{ env.ACR_REGISTRY }}                              # 一次性登录"
+              echo "docker pull ${{ env.ACR_REGISTRY }}/${{ env.ACR_NAMESPACE }}/aitestplatform-${{ matrix.service }}:latest"
+            fi
             echo '```'
           } >> $GITHUB_STEP_SUMMARY

@@ -1,18 +1,26 @@
-# 生产部署 compose（拉取 GHCR 预构建镜像，无需服务器本地 build）
+# 生产部署 compose（拉取预构建镜像，无需服务器本地 build）
 #
-# 使用前提：
-#   1. GHCR 上已经有镜像（GitHub Actions 推送的或手动 push 的）
-#   2. 镜像可见性 = public（开源场景）；private 镜像需先 docker login ghcr.io
+# 支持双 registry：
+#   ┌─ 默认 GHCR（海外或有代理的环境）─┐
+#   │   IMAGE_REGISTRY=ghcr.io         │
+#   │   IMAGE_NAMESPACE=jaredxh        │   ← 等同旧的 GHCR_OWNER
+#   └──────────────────────────────────┘
+#   ┌─ 切阿里云 ACR（国内秒级拉取）────┐
+#   │   IMAGE_REGISTRY=crpi-xxxx.cn-beijing.personal.cr.aliyuncs.com │
+#   │   IMAGE_NAMESPACE=jaredxh-aitest │   ← ACR 命名空间
+#   └──────────────────────────────────┘
 #
 # 必填环境变量（写入 .env 或 export）：
-#   GHCR_OWNER       GitHub 仓库 owner（小写），如 your-username
-#   IMAGE_TAG        镜像 tag，默认 latest；生产建议钉到 v1.2.3 防止意外升级
+#   IMAGE_REGISTRY    镜像仓库域名；默认 ghcr.io
+#   IMAGE_NAMESPACE   镜像命名空间（GHCR 是 owner 用户名小写；ACR 是命名空间名）
+#                     兼容：未设 IMAGE_NAMESPACE 时回退读 GHCR_OWNER
+#   IMAGE_TAG         镜像 tag，默认 latest；生产建议钉到 v1.2.3 防止意外升级
 #
 # 启动：
 #   docker compose -f docker-compose.prod.yml --env-file .env pull
 #   docker compose -f docker-compose.prod.yml --env-file .env up -d
 #
-# 详细教程：见 docs/DEPLOYMENT_GHCR.md
+# 详细教程：见 docs/DEPLOYMENT_GHCR.md（含阿里云 ACR 配置）
 
 services:
   db:
@@ -34,7 +42,8 @@ services:
 
   backend:
     # 关键差异：用 image 取代 build；服务器无需 git clone / Dockerfile
-    image: ghcr.io/${GHCR_OWNER:?need GHCR_OWNER env var}/aitestplatform-backend:${IMAGE_TAG:-latest}
+    # IMAGE_NAMESPACE 优先；缺失时回退到旧名 GHCR_OWNER（保持向后兼容）
+    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_NAMESPACE:-${GHCR_OWNER:?need IMAGE_NAMESPACE or GHCR_OWNER in .env}}/aitestplatform-backend:${IMAGE_TAG:-latest}
     restart: unless-stopped
     environment:
       POSTGRES_HOST: db
@@ -79,7 +88,7 @@ services:
         condition: service_healthy
 
   frontend:
-    image: ghcr.io/${GHCR_OWNER:?need GHCR_OWNER env var}/aitestplatform-frontend:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_NAMESPACE:-${GHCR_OWNER:?need IMAGE_NAMESPACE or GHCR_OWNER in .env}}/aitestplatform-frontend:${IMAGE_TAG:-latest}
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-80}:80"

@@ -515,9 +515,177 @@ docker compose -f docker-compose.prod.yml -f docker-compose.vpn.yml --env-file .
 
 ---
 
+## 十二、阿里云 ACR 同步（国内服务器秒级拉取）
 
+GHCR 在国内云服务器上拉取慢甚至超时（无 CDN，国际带宽）。最佳解法：在 GitHub Actions 构建完成后，**同时**推送到阿里云容器镜像服务（ACR），服务器永久从 ACR 拉镜像。
 
+> **本节是可选增强**。即使不配置 ACR，原 GHCR 流程仍正常工作；配置 ACR 后 workflow **自动**双 push，零额外 build 成本。
 
+### 12.1 工作原理
+
+```
+本地推代码                  GitHub Actions (一次 build)              你的国内服务器
+                                       │
+                                       ├──► ghcr.io/<owner>/...        （海外/有代理用）
+                                       │
+                                       └──► <ACR_REGISTRY>/<NS>/...    （国内秒级拉取）
+```
+
+`docker/build-push-action@v5` 支持一次 build 同时 push 到多个 registry，不会重复构建，不增加工作流时间。
+
+### 12.2 开通阿里云 ACR 个人版（5 分钟，免费）
+
+1. 访问 <https://cr.console.aliyun.com/>，登录阿里云账号（已实名即可）
+2. **顶部下拉选地域** —— 选离你**部署服务器**最近的地域（决定拉取速度）：
+
+   | 服务器所在地 | 阿里云地域 | Registry 地址示例 |
+   |---|---|---|
+   | 北京 | 华北2-北京 | `crpi-xxxxx.cn-beijing.personal.cr.aliyuncs.com` |
+   | 上海 | 华东2-上海 | `crpi-xxxxx.cn-shanghai.personal.cr.aliyuncs.com` |
+   | 深圳/广州 | 华南1-深圳 | `crpi-xxxxx.cn-shenzhen.personal.cr.aliyuncs.com` |
+   | 成都/重庆 | 西南1-成都 | `crpi-xxxxx.cn-chengdu.personal.cr.aliyuncs.com` |
+   | 香港 | 中国香港 | `crpi-xxxxx.cn-hongkong.personal.cr.aliyuncs.com` |
+
+   > 阿里云 ACR 个人版自 2024 年起每个用户分配独立域名 `crpi-xxxx.<region>.personal.cr.aliyuncs.com`（不再是早期共用的 `registry.<region>.aliyuncs.com`）。
+
+3. 左侧菜单 → **实例列表** → **个人实例**（首次会提示创建，免费）
+4. 左侧 → **访问凭证** → 「设置 Registry 登录密码」（**这不是阿里云登录密码**，是 docker login 用的独立密码，必须记住）
+5. 左侧 → **命名空间** → 创建命名空间，建议：
+   - 名称：`<your-name>-aitest`（全网唯一）
+   - 默认仓库类型：私有
+   - **自动创建仓库：开启** ⭐（GHA push 时会自动创建仓库，不用预先建）
+6. （仅当步骤 5 没开"自动创建"）左侧 → **镜像仓库** → 手动建两个仓库，类型都选**本地仓库**：
+   - `aitestplatform-backend`
+   - `aitestplatform-frontend`
+
+完成后你应该有这 4 项信息：
+
+| 信息 | 说明 | 示例 |
+|---|---|---|
+| Registry 地址 | 控制台「访问凭证」页显示 | `crpi-95wca3up2ua46wmd.cn-beijing.personal.cr.aliyuncs.com` |
+| 命名空间 | 自己创建的 | `jaredxh-aitest` |
+| Registry 用户名 | 控制台「访问凭证」页显示 | `wxh19930503`（一般是阿里云账号简称） |
+| Registry 密码 | 步骤 4 自己设的 | `<你设的密码>` |
+
+### 12.3 在 GitHub 仓库添加 4 个 Secrets
+
+GitHub 仓库 → **Settings** → 左侧 **Secrets and variables → Actions** → **New repository secret**，添加这 4 个：
+
+| Secret 名 | 值 |
+|---|---|
+| `ACR_REGISTRY` | `crpi-95wca3up2ua46wmd.cn-beijing.personal.cr.aliyuncs.com`（你的实际地址） |
+| `ACR_NAMESPACE` | `jaredxh-aitest`（你的实际命名空间） |
+| `ACR_USERNAME` | `wxh19930503`（你的 Registry 用户名） |
+| `ACR_PASSWORD` | （你设的 Registry 密码） |
+
+> 4 个全配齐 workflow 才会启用 ACR 推送；缺任一项自动跳过 ACR 步骤，仅推 GHCR。这样配错时不会让 CI 失败。
+
+### 12.4 触发同步构建
+
+任意一种方式触发 workflow：
+
+```bash
+# 方式 A：push 一次（无代码改动也行）
+git commit --allow-empty -m "ci: trigger ACR sync"
+git push origin main
+
+# 方式 B：在 Actions 页面手动 Run workflow
+```
+
+观察 Actions 运行日志：在 `Compute image targets` step 应该看到：
+
+```
+ACR 同步已启用：crpi-xxx.cn-beijing.personal.cr.aliyuncs.com/jaredxh-aitest
+```
+
+`Build and push` step 完成后，到 ACR 控制台 → 镜像仓库，应能看到 `aitestplatform-backend` / `aitestplatform-frontend` 两个仓库及 tags。
+
+### 12.5 服务器切换到 ACR 拉取（一次性）
+
+#### 5.1 一次性 docker login
+
+```bash
+docker login --username=<ACR_USERNAME> <ACR_REGISTRY>
+# 提示输密码 → 输入步骤 4 设的 Registry 密码（不是阿里云登录密码！）
+```
+
+成功后凭据保存在 `~/.docker/config.json`，后续 pull 不再需要登录。
+
+#### 5.2 修改服务器 `.env`
+
+```bash
+cd ~/aitestplatform
+nano .env
+```
+
+注释掉旧的 `GHCR_OWNER`，添加 ACR 三件套：
+
+```bash
+# IMAGE_REGISTRY=ghcr.io           ← 注释掉默认
+# GHCR_OWNER=jaredxh                ← 注释掉旧名
+
+# ── 切换到阿里云 ACR ──
+IMAGE_REGISTRY=crpi-95wca3up2ua46wmd.cn-beijing.personal.cr.aliyuncs.com
+IMAGE_NAMESPACE=jaredxh-aitest
+IMAGE_TAG=latest
+```
+
+#### 5.3 重新 pull + up
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env pull
+# 国内秒级拉完（同地域），跨地域几十秒
+
+docker compose -f docker-compose.prod.yml --env-file .env up -d
+
+# 验证
+docker compose -f docker-compose.prod.yml --env-file .env ps
+curl http://localhost:${BACKEND_PORT:-8000}/api/health
+```
+
+完成后所有日常升级（push 代码 → GHA → ACR → 服务器 pull）都是国内秒级。
+
+### 12.6 ACR 个人版限制
+
+| 维度 | 限制 | 影响 |
+|---|---|---|
+| 镜像数量 | 300 个 / 账号 | 完全够用（本项目只有 2 个仓库） |
+| 命名空间 | 1 个 / 账号 | 够用 |
+| 单镜像层大小 | 10 GB | 完全够用 |
+| 拉取并发 | 较宽松（无明确限速） | 个人 / 小团队场景无影响 |
+| 公网拉取 | **必须 docker login** | 不支持匿名 pull（与 ACR 企业版不同） |
+| 跨账号共享 | 只能私有，不能共享 | 想做开源公开拉取仍需走 GHCR |
+
+> **想给开源用户也加速？** 可以在 GHA workflow 同时同步到 dockerhub 公开仓库（免登录拉取）；或者在 README 推荐用 `ghcr.nju.edu.cn` 反代。
+
+### 12.7 ACR 同步常见坑
+
+| 现象 | 根因 | 解法 |
+|---|---|---|
+| GHA 报 `denied: requested access to the resource is denied` | ACR_USERNAME 用了阿里云登录账号；或密码错 | 用控制台「访问凭证」页显示的用户名 + Registry 密码 |
+| GHA 报 `name unknown: The repository with name 'jaredxh-aitest/aitestplatform-backend' does not exist` | 命名空间没开"自动创建" | 控制台 → 命名空间 → 编辑 → 开启自动创建；或手动建两个仓库 |
+| GHA 卡在推送 ACR 很久 | runner 出向到阿里云慢（非常少见） | 一般 1-3 分钟会完成，更慢可考虑只在 tag 发版时同步 ACR |
+| 服务器 `docker pull` 报 `unauthorized: authentication required` | 没 login | 步骤 5.1 docker login 一次 |
+| 服务器 `docker pull` 报 `manifest unknown` | 命名空间或镜像名拼错 | 对照 ACR 控制台「镜像仓库」详情页的"操作指南"显示的完整路径 |
+| 镜像名大小写问题 | ACR 命名空间 / 仓库名都强制小写 | 全部用小写，避免横线后跟数字之类的特殊组合 |
+
+### 12.8 切回 GHCR
+
+任何时候 `.env` 改回去：
+
+```bash
+IMAGE_REGISTRY=ghcr.io
+IMAGE_NAMESPACE=jaredxh
+docker compose -f docker-compose.prod.yml --env-file .env pull
+docker compose -f docker-compose.prod.yml --env-file .env up -d
+```
+
+ACR 不删，作为冗余备份。
+
+---
+
+*文档版本：v1.1 — 增加阿里云 ACR 双 push 章节*
+*最后更新：2026-05-06*
 
 
 
