@@ -265,16 +265,26 @@ AITestPlatform/
 
 期望补齐的截图清单：
 
-- [ ] 登录页（`/login`）
-- [ ] 数据仪表盘（项目维度统计 / 双视图通过率）
-- [ ] 测试用例管理（模块树 + AI 生成）
-- [ ] 需求管理（文档上传 + AI 评审）
-- [ ] AI 智能对话（流式 SSE）
-- [ ] UI 自动化执行监控（SSE 时间线 + 实时画面 noVNC）
-- [ ] 执行报告详情（视频 / trace / 截图回放）
-- [ ] 测试物料管理（6 种类型 × 5 级层级）
-- [ ] 提示词模板 + 版本回滚
-- [ ] LLM Provider 配置
+- 登录页（`/login`）
+![项目截图](./image/login_image.png)
+- 数据仪表盘（项目维度统计 / 双视图通过率）
+![项目截图](./image/yibiao_image.png)
+- 测试用例管理（模块树 + AI 生成）
+![项目截图](./image/testcases_image.png)
+- 需求管理（文档上传 + AI 评审）
+![项目截图](./image/requirements_image.png)
+- AI 智能对话（流式 SSE）
+![项目截图](./image/ai_image.png)
+- UI 自动化执行监控（SSE 时间线 + 实时画面 noVNC）
+![项目截图](./image/uiTest_image.png)
+- 执行报告详情（视频 / trace / 截图回放）
+![项目截图](./image/uiBaogao_image.png)
+- 测试物料管理（6 种类型 × 5 级层级）
+![项目截图](./image/wuliao_image.png)
+- 项目管理
+![项目截图](./image/project_image.png)
+- LLM Provider 配置
+![项目截图](./image/llm_image.png)
 
 ---
 
@@ -282,8 +292,8 @@ AITestPlatform/
 
 ### 在线体验
 
-> 🌐 在线 demo 暂未上线，建议本地或服务器部署体验。
-> 项目所有功能均可通过 Docker Compose 一键启动（约 5–10 分钟首次构建）。
+> 🌐 http://49.232.246.119:7080/login
+>    ps:admin/admin123
 
 ### 环境要求
 
@@ -1241,34 +1251,22 @@ TEST_DATA_AUDIT_RETENTION_DAYS=180   # 审计日志（预留）
 ### 前端页面
 
 /login                登录
-![项目截图](./image/login_image.png)
 /                     仪表盘（项目筛选）
-![项目截图](./image/yibiao_image.png)
 /projects             项目列表 / 设置 / 成员
-![项目截图](./image/project_image.png)
 /requirements         需求列表 / 详情（评审）
-![项目截图](./image/requirements_image.png)
 /testcases            用例列表 / 模块树 / 详情 / AI 生成 / 执行 UI
-![项目截图](./image/testcases_image.png)
 /test-data            测试物料管理（物料集 + 条目 + 导入导出）
-![项目截图](./image/wuliao_image.png)
 /chat                 AI 对话（多会话）
-![项目截图](./image/ai_image.png)
 /ui-automation
   /environments       UI 执行环境
   /history            执行历史
   /executions/:id     执行详情（含视频 / trace / 时间线）
   /executions/:id/monitor   实时监控（SSE + 实时画面 noVNC）
-![项目截图](./image/uiTest_image.png)
-![项目截图](./image/uiBaogao_image.png)
 /settings
   /llm                LLM 配置
   /prompts            提示词管理
   /users              用户管理
   /roles              角色管理
-![项目截图](./image/llm_image.png)
-
-![项目截图](./image/user_image.png)
 
 ---
 
@@ -1534,7 +1532,6 @@ bash scripts/release.sh v1.2.0
 ---
 
 ## 📞 交流与反馈
-- 体验地址：http://49.232.246.119:7080/login     admin/admin123
 
 - **GitHub Issues**：Bug / 功能请求 / 部署问题 → 直接提 issue（建议先看 [§排错速查](#-排错速查)）
 - **GitHub Discussions**：架构讨论 / 用法咨询 / 经验分享
