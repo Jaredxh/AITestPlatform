@@ -41,3 +41,10 @@ coverage.xml
 # Build
 dist/
 build/
+
+# 内部设计 / 实施计划文档（不开源）
+# 默认忽略整个 docs/ 下的 .md，再用 ! 白名单保留对开源用户必要的几个部署/优化文档
+# 以后想新增公开文档时，加一行 !docs/<filename>.md 即可
+docs/*.md
+!docs/DEPLOYMENT_GHCR.md
+!docs/IMAGE_SLIMMING_PLAN.md
