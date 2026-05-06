@@ -1,0 +1,102 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aitest}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aitest123}
+      POSTGRES_DB: ${POSTGRES_DB:-aitest_platform}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aitest} -d ${POSTGRES_DB:-aitest_platform}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-aitest}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aitest123}
+      POSTGRES_DB: ${POSTGRES_DB:-aitest_platform}
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      ENCRYPT_KEY: ${ENCRYPT_KEY:-}
+      DEBUG: "false"
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@aitest.local}
+      # ── 二期 UI 自动化（Task 11.3 集成）──────────────────────
+      # snapshot_clipper 真的会读这两个；其余 UI_* 由 DB environment 列承载
+      UI_SNAPSHOT_MAX_CHARS: ${UI_SNAPSHOT_MAX_CHARS:-3000}
+      UI_SNAPSHOT_DIFF_CONTEXT: ${UI_SNAPSHOT_DIFF_CONTEXT:-2}
+      # cleanup cron（Task 11.2）；间隔 0 关闭，run_on_startup 默认 false
+      CLEANUP_INTERVAL_HOURS: ${CLEANUP_INTERVAL_HOURS:-24}
+      CLEANUP_RUN_ON_STARTUP: ${CLEANUP_RUN_ON_STARTUP:-false}
+      UI_MEDIA_RETENTION_DAYS: ${UI_MEDIA_RETENTION_DAYS:-30}
+      UI_STATE_RETENTION_DAYS: ${UI_STATE_RETENTION_DAYS:-7}
+      UI_SNAPSHOT_RETENTION_DAYS: ${UI_SNAPSHOT_RETENTION_DAYS:-7}
+      TEST_DATA_FILE_RETENTION_DAYS: ${TEST_DATA_FILE_RETENTION_DAYS:-90}
+      # http_login 专用旁路代理（VPN 场景下 auth_base_url 在公司内网时启用）。
+      # 仅 http_login 走它；LLM 调用 / ai_login / state_inject 都不受影响。
+      # 例：``UI_HTTP_LOGIN_PROXY=http://host.docker.internal:8118``。
+      UI_HTTP_LOGIN_PROXY: ${UI_HTTP_LOGIN_PROXY:-}
+      # chromium 出口代理（VPN 场景下"被测系统"在公司内网时启用）。
+      # ``BrowserBundle`` 启动时把这条作为 ``--proxy-server`` 透传给 chromium，
+      # 用例执行 / ai_login / state_inject 期间所有浏览器流量都走该代理。
+      # 例：``UI_BROWSER_PROXY=http://host.docker.internal:8118``。
+      UI_BROWSER_PROXY: ${UI_BROWSER_PROXY:-}
+      # 不走代理的 host 列表（逗号分隔）。本地服务必须 bypass，否则 chromium
+      # 经代理访问 ``localhost``/``host.docker.internal`` 会断。
+      # 例：``localhost,127.0.0.1,host.docker.internal,db,backend,frontend``。
+      UI_BROWSER_PROXY_BYPASS: ${UI_BROWSER_PROXY_BYPASS:-localhost,127.0.0.1,host.docker.internal,db,backend,frontend}
+      # 有头浏览器远程观察栈（详见 backend/Dockerfile §6 + entrypoint.sh）。
+      # 默认开启；想关时设 ``UI_NOVNC_ENABLED=false`` 即可（仍保留 Xvfb，
+      # chromium 在 Xvfb 跑、但不暴露 VNC 端口）。
+      UI_NOVNC_ENABLED: ${UI_NOVNC_ENABLED:-true}
+      UI_NOVNC_PORT: ${UI_NOVNC_PORT:-6080}
+    ports:
+      - "8000:8000"
+    volumes:
+      # 一期：requirements 等文档（向后兼容旧部署的整目录卷）
+      - backend_uploads:/app/uploads
+      # 二期：拆分挂载，子路径覆盖父挂载里对应目录。这样 named volume 各自
+      # 独立持久化，备份 / 重置 / 清理可以颗粒化。⚠️ 顺序很重要：父挂载在前
+      # 子挂载在后，否则父挂载会覆盖子挂载。
+      - test_data:/app/uploads/test-data
+      - ui_artifacts:/app/uploads/ui_artifacts
+      - ui_state:/app/uploads/ui_state
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint: ["/app/entrypoint.sh"]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      # nginx 通过 alias 直接读 ui_artifacts 卷（详见 frontend/nginx.conf）
+      # ⚠️ 只读挂载：前端绝对不应该写媒体文件
+      # ⚠️ 故意不挂 ui_state / test_data：登录态 + secret 元信息不应被前端容器接触
+      - ui_artifacts:/app/uploads/ui_artifacts:ro
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  backend_uploads:
+  # 二期 UI 自动化 named volumes（Task 11.3）
+  test_data:
+  ui_artifacts:
+  ui_state:

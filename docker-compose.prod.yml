@@ -1,0 +1,93 @@
+# 生产部署 compose（拉取 GHCR 预构建镜像，无需服务器本地 build）
+#
+# 使用前提：
+#   1. GHCR 上已经有镜像（GitHub Actions 推送的或手动 push 的）
+#   2. 镜像可见性 = public（开源场景）；private 镜像需先 docker login ghcr.io
+#
+# 必填环境变量（写入 .env 或 export）：
+#   GHCR_OWNER       GitHub 仓库 owner（小写），如 your-username
+#   IMAGE_TAG        镜像 tag，默认 latest；生产建议钉到 v1.2.3 防止意外升级
+#
+# 启动：
+#   docker compose -f docker-compose.prod.yml --env-file .env pull
+#   docker compose -f docker-compose.prod.yml --env-file .env up -d
+#
+# 详细教程：见 docs/DEPLOYMENT_GHCR.md
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aitest}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aitest123}
+      POSTGRES_DB: ${POSTGRES_DB:-aitest_platform}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aitest} -d ${POSTGRES_DB:-aitest_platform}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    # 关键差异：用 image 取代 build；服务器无需 git clone / Dockerfile
+    image: ghcr.io/${GHCR_OWNER:?need GHCR_OWNER env var}/aitestplatform-backend:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-aitest}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aitest123}
+      POSTGRES_DB: ${POSTGRES_DB:-aitest_platform}
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      ENCRYPT_KEY: ${ENCRYPT_KEY:-}
+      DEBUG: "false"
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@aitest.local}
+      # ── 二期 UI 自动化（与 docker-compose.yml 完全一致）──────
+      UI_SNAPSHOT_MAX_CHARS: ${UI_SNAPSHOT_MAX_CHARS:-3000}
+      UI_SNAPSHOT_DIFF_CONTEXT: ${UI_SNAPSHOT_DIFF_CONTEXT:-2}
+      CLEANUP_INTERVAL_HOURS: ${CLEANUP_INTERVAL_HOURS:-24}
+      CLEANUP_RUN_ON_STARTUP: ${CLEANUP_RUN_ON_STARTUP:-false}
+      UI_MEDIA_RETENTION_DAYS: ${UI_MEDIA_RETENTION_DAYS:-30}
+      UI_STATE_RETENTION_DAYS: ${UI_STATE_RETENTION_DAYS:-7}
+      UI_SNAPSHOT_RETENTION_DAYS: ${UI_SNAPSHOT_RETENTION_DAYS:-7}
+      TEST_DATA_FILE_RETENTION_DAYS: ${TEST_DATA_FILE_RETENTION_DAYS:-90}
+      # http_login / browser 代理（VPN 内网场景启用）
+      UI_HTTP_LOGIN_PROXY: ${UI_HTTP_LOGIN_PROXY:-}
+      UI_BROWSER_PROXY: ${UI_BROWSER_PROXY:-}
+      UI_BROWSER_PROXY_BYPASS: ${UI_BROWSER_PROXY_BYPASS:-localhost,127.0.0.1,host.docker.internal,db,backend,frontend}
+      # noVNC 实时画面
+      UI_NOVNC_ENABLED: ${UI_NOVNC_ENABLED:-true}
+      UI_NOVNC_PORT: ${UI_NOVNC_PORT:-6080}
+    ports:
+      - "8000:8000"
+    volumes:
+      - backend_uploads:/app/uploads
+      - test_data:/app/uploads/test-data
+      - ui_artifacts:/app/uploads/ui_artifacts
+      - ui_state:/app/uploads/ui_state
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    image: ghcr.io/${GHCR_OWNER:?need GHCR_OWNER env var}/aitestplatform-frontend:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+    volumes:
+      - ui_artifacts:/app/uploads/ui_artifacts:ro
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  backend_uploads:
+  test_data:
+  ui_artifacts:
+  ui_state:

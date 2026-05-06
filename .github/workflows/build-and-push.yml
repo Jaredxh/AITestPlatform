@@ -1,0 +1,133 @@
+name: Build and Push to GHCR
+
+# 触发条件：
+#  1. push 到 main 分支          → 推 :latest + :main + :sha-<7位>
+#  2. 推 git tag v*              → 推 :v1.2.3 + :latest + :sha-<7位>
+#  3. PR 到 main                 → 仅构建不推送（验证 Dockerfile 没坏）
+#  4. workflow_dispatch（手动）  → 推自定义 tag
+#
+# 镜像地址：
+#  ghcr.io/<owner>/aitestplatform-backend:<tag>
+#  ghcr.io/<owner>/aitestplatform-frontend:<tag>
+#
+# 首次发布前必读：见 docs/DEPLOYMENT_GHCR.md
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "自定义 tag（留空则按默认规则打）"
+        required: false
+        default: ""
+
+env:
+  REGISTRY: ghcr.io
+  # 镜像 owner 用 lowercase（GHCR 要求小写，github.repository_owner 可能含大写）
+  IMAGE_OWNER_LC: ${{ github.repository_owner }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      # 一个失败不阻断另一个（前端常常先于后端跑完）
+      fail-fast: false
+      matrix:
+        include:
+          - service: backend
+            context: ./backend
+            dockerfile: ./backend/Dockerfile
+          - service: frontend
+            context: ./frontend
+            dockerfile: ./frontend/Dockerfile
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 默认 ubuntu runner ~14GB 可用磁盘；backend 镜像 ~4GB + 缓存可能撑爆
+      # 这一步释放 ~30GB（删 dotnet / android sdk / haskell ghc 等无关运行时）
+      - name: Free up disk space
+        if: matrix.service == 'backend'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h
+
+      # GHCR owner 必须小写
+      - name: Lowercase owner
+        run: echo "IMAGE_OWNER_LC=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER_LC }}/aitestplatform-${{ matrix.service }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event.inputs.tag != '' }}
+          labels: |
+            org.opencontainers.image.title=AITestPlatform ${{ matrix.service }}
+            org.opencontainers.image.description=AI-driven test automation platform — ${{ matrix.service }} service
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=MIT
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          # 先只支持 amd64（绝大多数云服务器是 x86_64）
+          # 想加 ARM 服务器支持改成 linux/amd64,linux/arm64（构建时间翻倍）
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # GitHub Actions 自带的 layer cache（每个 service 独立 scope）
+          # 第一次跑无 cache 全量构建（backend 约 25-40 分钟）
+          # 之后只动应用代码层 → cache 命中 → 2-5 分钟
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+      - name: Job summary
+        if: github.event_name != 'pull_request'
+        run: |
+          {
+            echo "## :rocket: ${{ matrix.service }} 推送成功"
+            echo ""
+            echo "**镜像地址：** \`${{ env.REGISTRY }}/${{ env.IMAGE_OWNER_LC }}/aitestplatform-${{ matrix.service }}\`"
+            echo ""
+            echo "**本次 tag：**"
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo ""
+            echo "**服务器拉取命令：**"
+            echo '```bash'
+            echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER_LC }}/aitestplatform-${{ matrix.service }}:latest"
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY

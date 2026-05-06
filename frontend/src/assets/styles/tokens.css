@@ -1,0 +1,104 @@
+/**
+ * 设计 Token：颜色 / 圆角 / 间距 / 阴影 / 过渡
+ * Light & Dark 双主题，配合 html.dark 切换。
+ */
+
+:root {
+  --brand-primary: #4f46e5;
+  --brand-primary-hover: #4338ca;
+  --brand-primary-active: #3730a3;
+  --brand-primary-soft: rgba(79, 70, 229, 0.08);
+  --brand-primary-soft-hover: rgba(79, 70, 229, 0.14);
+  --brand-primary-border: rgba(79, 70, 229, 0.32);
+  --brand-gradient: linear-gradient(135deg, #6366f1 0%, #4f46e5 60%, #4338ca 100%);
+  --brand-gradient-soft: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%);
+
+  --color-success: #16a34a;
+  --color-warning: #f59e0b;
+  --color-error: #ef4444;
+  --color-info: #0ea5e9;
+
+  --bg-page: #f5f7fb;
+  --bg-page-soft: #f0f2f8;
+  --bg-card: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-sider: #ffffff;
+  --bg-header: rgba(255, 255, 255, 0.85);
+  --bg-hover: rgba(15, 23, 42, 0.04);
+  --bg-active: rgba(79, 70, 229, 0.08);
+
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-tertiary: #94a3b8;
+
+  --border-subtle: rgba(15, 23, 42, 0.06);
+  --border-default: rgba(15, 23, 42, 0.1);
+  --border-strong: rgba(15, 23, 42, 0.16);
+
+  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 4px 8px -2px rgba(15, 23, 42, 0.06), 0 6px 16px -8px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 8px 16px -4px rgba(15, 23, 42, 0.06), 0 16px 32px -8px rgba(15, 23, 42, 0.12);
+  --shadow-xl: 0 20px 40px -8px rgba(15, 23, 42, 0.16);
+
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+  --radius-pill: 9999px;
+
+  --space-2: 4px;
+  --space-3: 8px;
+  --space-4: 12px;
+  --space-5: 16px;
+  --space-6: 20px;
+  --space-7: 24px;
+  --space-8: 32px;
+
+  --easing-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --easing-emphasized: cubic-bezier(0.2, 0, 0, 1);
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-slow: 320ms;
+
+  --layout-sider-width: 232px;
+  --layout-sider-collapsed-width: 72px;
+  --layout-header-height: 56px;
+  --layout-content-padding: 24px;
+  --layout-content-max-width: 1440px;
+}
+
+html.dark {
+  --brand-primary: #818cf8;
+  --brand-primary-hover: #a5b4fc;
+  --brand-primary-active: #6366f1;
+  --brand-primary-soft: rgba(129, 140, 248, 0.14);
+  --brand-primary-soft-hover: rgba(129, 140, 248, 0.22);
+  --brand-primary-border: rgba(129, 140, 248, 0.4);
+  --brand-gradient: linear-gradient(135deg, #6366f1 0%, #4f46e5 60%, #312e81 100%);
+  --brand-gradient-soft: linear-gradient(135deg, rgba(99, 102, 241, 0.12) 0%, rgba(67, 56, 202, 0.18) 100%);
+
+  --bg-page: #0b0d12;
+  --bg-page-soft: #0f1218;
+  --bg-card: #161922;
+  --bg-elevated: #1c2030;
+  --bg-sider: #12141b;
+  --bg-header: rgba(18, 20, 27, 0.72);
+  --bg-hover: rgba(255, 255, 255, 0.04);
+  --bg-active: rgba(129, 140, 248, 0.18);
+
+  --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-tertiary: #64748b;
+
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-default: rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.16);
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 6px 18px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.5);
+  --shadow-xl: 0 20px 48px rgba(0, 0, 0, 0.6);
+}

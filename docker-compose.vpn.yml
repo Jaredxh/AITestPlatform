@@ -1,0 +1,79 @@
+# VPN override：让浏览器（chromium）通过宿主机上的代理出口访问公司内网。
+#
+# ── 为什么需要这个 override ────────────────────────────────────────────
+# macOS Docker Desktop 的容器跑在 LinuxKit VM 里。即便用 ``network_mode: host``
+# 共享的也只是 VM 的 host network，**而不是 macOS 内核**。VPN（OpenVPN Connect /
+# Tunnelblick / Cisco AnyConnect 等）跑在 macOS 的 utun 接口上，VM 永远看不到。
+# 所以："宿主机 curl 公司内网通；容器里 5s 超时"是 macOS Docker 的架构必然。
+#
+# 唯一可行的解法：**让 chromium 走宿主机上的代理出口**。代理本身跑在 macOS 上，
+# 持有 macOS 路由表，自然能命中 VPN 隧道。
+#
+# Linux 原生 Docker 不需要这个 override（``network_mode: host`` 直接生效）。
+#
+# ── 前置：在宿主机起一个 HTTP 代理（任选其一）────────────────────────
+#   # 方案 A：mitmproxy（最常用，pip 一键）
+#   pip install mitmproxy
+#   mitmdump --listen-host 0.0.0.0 --listen-port 8118
+#
+#   # 方案 B：tinyproxy（brew 一键）
+#   brew install tinyproxy
+#   cat >/tmp/tinyproxy.conf <<EOF
+#   Listen 0.0.0.0
+#   Port 8118
+#   Allow 127.0.0.1
+#   Allow 192.168.65.0/24
+#   EOF
+#   tinyproxy -c /tmp/tinyproxy.conf
+#
+#   # 方案 C：pproxy（pip 一键，无依赖）
+#   pip install pproxy
+#   pproxy -l http://0.0.0.0:8118
+#
+# 启动后用宿主机 curl 验证：
+#   curl --proxy http://localhost:8118 https://auth-dashboard.keyuanjiankang.com/login
+# 应该直接回 200。
+#
+# ── 用法 ──────────────────────────────────────────────────────────────
+#   # 启动（带 VPN proxy）
+#   docker compose -f docker-compose.yml -f docker-compose.vpn.yml up -d backend
+#
+#   # 切回不走代理（公网 / 本地测试）
+#   docker compose up -d backend
+#
+# ── 验证容器内 chromium 能否经代理访问公司内网 ──────────────────────────
+# 跑一次 ai_login 试跑；或：
+#   docker exec aitestplatform-backend-1 curl -sS -o /dev/null \
+#       -w "HTTP=%{http_code}\n" --max-time 5 \
+#       --proxy http://host.docker.internal:8118 \
+#       https://auth-dashboard.keyuanjiankang.com/login
+
+services:
+  backend:
+    environment:
+      # ── 后端 http_login 专用代理（precondition_executor 走 httpx）────
+      # 这里 backend 用 ``trust_env=False`` 主动忽略全局 HTTP_PROXY，必须显式
+      # 配 ``UI_HTTP_LOGIN_PROXY`` 才能让"挑战接口/登录接口"经代理出去。否则
+      # 现象就是：浏览器侧（UI_BROWSER_PROXY）能通；前置 http_login 仍然
+      # ``ConnectTimeout``。
+      UI_HTTP_LOGIN_PROXY: ${UI_HTTP_LOGIN_PROXY:-http://host.docker.internal:8118}
+      # ── 浏览器出口代理（chromium 启动时透传给 ``--proxy-server``）────
+      # ``host.docker.internal`` 是 Docker Desktop 内置的宿主机别名，
+      # 自动映射到宿主机网卡 IP（不需要在 host 里改 /etc/hosts）。
+      UI_BROWSER_PROXY: ${UI_BROWSER_PROXY:-http://host.docker.internal:8118}
+      # 不走代理的 host 列表（逗号分隔）。本地服务一定要 bypass，
+      # 否则 chromium 经代理访问 ``localhost`` 会直接断（代理不知道指的是
+      # 哪台 localhost）。
+      UI_BROWSER_PROXY_BYPASS: ${UI_BROWSER_PROXY_BYPASS:-localhost,127.0.0.1,host.docker.internal,db,backend,frontend}
+      # ── 让 backend 自己的出口（LLM 调用、需求文档下载等）也经过代理 ────
+      # 启用后 backend 进程内的 httpx / requests 会自动走代理；如果你的 LLM
+      # provider 在公网且 VPN 是 split-tunnel（公网不走 VPN），这条可不开。
+      # VPN 全劫持流量场景下必须开，否则 backend 自己也访问不了 LLM。
+      HTTP_PROXY: ${HTTP_PROXY:-http://host.docker.internal:8118}
+      HTTPS_PROXY: ${HTTPS_PROXY:-http://host.docker.internal:8118}
+      # 容器内本地服务必须 bypass，否则连 db 都连不上
+      NO_PROXY: localhost,127.0.0.1,host.docker.internal,db,backend,frontend
+    # extra_hosts 在 macOS 上一般不需要（host.docker.internal 是默认就有的），
+    # Linux 上手动加一条以保兼容（host-gateway 是 Docker 20.10+ 特殊值）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
