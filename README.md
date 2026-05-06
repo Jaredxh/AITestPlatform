@@ -1,72 +1,88 @@
 # AITestPlatform
 
-**AI 驱动的轻量测试管理平台 —— 让 AI 做重活，让人做决策。**
+<div align="center">
 
-一站式覆盖 **需求评审 → 用例生成 → UI 自动化执行 → 报告分析** 的全链路；内置 LLM tool-calling 循环 + Playwright MCP，用自然语言描述用例、AI 自驱浏览器跑通业务，全程录屏 / 快照 / tool_call 可回放。
+### 🤖 AI 驱动的轻量测试管理平台
 
----
+**让 AI 做重活，让人做决策。**
 
-## 目录
+一站式覆盖 **需求评审 → 用例生成 → UI 自动化执行 → 报告分析** 的全链路；
+内置 LLM tool-calling 循环 + Playwright MCP，用自然语言描述用例、AI 自驱浏览器跑通业务，
+全程录屏 / 快照 / tool_call 可回放。
 
-- [核心特性](#核心特性)
-- [系统架构](#系统架构)
-- [技术栈](#技术栈)
-- [项目结构](#项目结构)
-- [部署前提](#部署前提)
-- [部署方案](#部署方案)
-  - [方案 A：本地开发（前后端热更新）](#方案-a本地开发前后端热更新)
-  - [方案 B：Docker 本地一键部署（推荐）](#方案-bdocker-本地一键部署推荐)
-  - [方案 C：Linux 服务器部署](#方案-clinux-服务器部署)
-  - [方案 D：被测系统在公司内网（VPN 场景）](#方案-d被测系统在公司内网vpn-场景)
-    - [D-1：宿主机代理模式（macOS / Windows Docker Desktop）](#d-1宿主机代理模式macos--windows-docker-desktop)
-    - [D-2：容器内 VPN sidecar 模式（不依赖宿主 VPN）](#d-2容器内-vpn-sidecar-模式不依赖宿主-vpn)
-  - **方案 E：GHCR 拉取预构建镜像（最快，3-5 分钟部署）** → 详见 [`docs/DEPLOYMENT_GHCR.md`](docs/DEPLOYMENT_GHCR.md)
-- [配置详解](#配置详解)
-- [模块清单](#模块清单)
-- [UI 自动化使用指南](#ui-自动化使用指南)
-- [实时画面（noVNC）](#实时画面novnc)
-- [运维常用命令](#运维常用命令)
-- [排错速查](#排错速查)
-- [开发与贡献](#开发与贡献)
-- [路线图](#路线图)
-- [进一步阅读](#进一步阅读)
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Vue](https://img.shields.io/badge/Vue-3.5+-4FC08D.svg?logo=vue.js&logoColor=white)](https://vuejs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.6+-3178C6.svg?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Playwright](https://img.shields.io/badge/Playwright-1.59+-2EAD33.svg?logo=playwright&logoColor=white)](https://playwright.dev/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791.svg?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![Docker](https://img.shields.io/badge/Docker-Compose%20v2-2496ED.svg?logo=docker&logoColor=white)](https://www.docker.com/)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+[快速开始](#-快速开始) · [部署方式](#-部署方式) · [使用指南](#-ui-自动化使用指南) · [排错](#-排错速查) · [文档](#-进一步阅读) · [路线图](#%EF%B8%8F-路线图)
+
+</div>
 
 ---
 
-## 核心特性
+## 📖 项目介绍
+
+AITestPlatform 是一款**AI 驱动的轻量级测试管理平台**，目标是把测试团队最耗时的"读需求 → 写用例 → 跑回归 → 看报告"四个环节交给 AI 做，让人专注在**需求理解 / 边界覆盖 / 失败诊断**这些真正需要判断力的地方。
+
+技术上采用：
+
+- **后端** FastAPI + SQLAlchemy 2.0 + PostgreSQL，原生异步、SSE 友好
+- **前端** Vue 3.5 + TypeScript + Naive UI + UnoCSS，类型安全 + 极简设计
+- **AI 层** OpenAI SDK 兼容协议（DeepSeek / 通义 / Ollama / GPT 等），LLM tool-calling 循环
+- **浏览器自动化** Playwright + `@playwright/mcp`（微软官方 MCP），AI 直接驱动 chromium
+- **容器化** Docker Compose 三容器最小架构（db / backend / frontend）
+
+与同类平台的差异化优势：
+
+| 差异点 | 说明 |
+|---|---|
+| 🔌 **AI 用 MCP 操作浏览器** | 不写 selector，靠语义定位元素，对页面 DOM 重构强健 |
+| 🧪 **三层数据可信度** | 区分"功能问题"和"测试数据问题"，业务通过率自动剔除数据噪音 |
+| 🖥️ **服务器也能"看见"AI 的浏览器** | 内置 Xvfb + x11vnc + noVNC，远程实时观察 chromium 操作 |
+| 🌐 **VPN / 内网场景一键解** | 双路代理（http_login + chromium 出口分别可控），mac/win/linux 三平台都覆盖 |
+| 🛠️ **运维深度** | 25 条排错速查、清理 cron、token 预算守卫、错误回放、镜像瘦身计划全套 |
+
+---
+
+## 🎯 核心特性
 
 ### 一期：测试管理 + AI 助手
 
 | 模块 | 能力 | 优势 |
 |---|---|---|
-| **需求文档管理** | Word / PDF / Markdown 上传，AI 自动评审、抽取关键点、给改进建议 | 替代手工通读全文 |
-| **测试用例管理** | 模块树组织、增删改查、Excel 导入导出 | 与项目 / 模块解耦的多对多结构 |
-| **AI 用例批量生成** | 基于需求文档 + 系统提示词流式生成；支持中断 / 续接 | 一次生成数十条用例，token 预算自动控制 |
-| **AI 智能对话** | 流式 SSE，自动识别"评审"/"生成"意图并触发后台任务；支持多会话、文件附件 | 用户用自然语言完成几乎所有操作 |
-| **多 LLM 支持** | OpenAI 协议兼容（DeepSeek / 通义 / Ollama / GPT 等）；支持平台内多 Provider 配置切换 | 不绑定单一供应商 |
-| **提示词管理** | 系统模板 + 自定义模板；按分类自动注入对话；版本号 + 历史回滚 | 提示词变更可追溯 |
-| **项目 / 角色 / 用户** | 多项目隔离；RBAC 角色（admin / member / viewer）；项目成员 + 全局权限矩阵 | 简单清晰，覆盖小团队所有场景 |
-| **数据仪表盘** | 项目进度、用例覆盖、AI 活动、UI 自动化双视图通过率（业务/执行/任务） | 单页一览所有运营指标 |
+| 📄 **需求文档管理** | Word / PDF / Markdown 上传，AI 自动评审、抽取关键点、给改进建议 | 替代手工通读全文 |
+| 📝 **测试用例管理** | 模块树组织、增删改查、Excel 导入导出 | 与项目 / 模块解耦的多对多结构 |
+| 🤖 **AI 用例批量生成** | 基于需求文档 + 系统提示词流式生成；支持中断 / 续接 | 一次生成数十条用例，token 预算自动控制 |
+| 💬 **AI 智能对话** | 流式 SSE，自动识别"评审" / "生成"意图并触发后台任务；多会话、文件附件 | 用户用自然语言完成几乎所有操作 |
+| 🧠 **多 LLM 支持** | OpenAI 协议兼容（DeepSeek / 通义 / Ollama / GPT 等）；平台内多 Provider 配置切换 | 不绑定单一供应商 |
+| 📋 **提示词管理** | 系统模板 + 自定义模板；按分类自动注入对话；版本号 + 历史回滚 | 提示词变更可追溯 |
+| 👥 **项目 / 角色 / 用户** | 多项目隔离；RBAC 角色（admin / member / viewer）；项目成员 + 全局权限矩阵 | 简单清晰，覆盖小团队所有场景 |
+| 📊 **数据仪表盘** | 项目进度、用例覆盖、AI 活动、UI 自动化双视图通过率（业务/执行/任务） | 单页一览所有运营指标 |
 
 ### 二期：UI 自动化
 
 | 模块 | 能力 | 优势 |
 |---|---|---|
-| **执行环境** | URL / 浏览器配置 / 前置步骤模板（http_login / ai_login / state_inject）；登录态 storage_state 自动复用 | 一次配置，N 次复用 |
-| **测试物料体系** | 6 种类型（string / secret / multiline / file / random / dataset）× 5 级层级（项目默认 / 环境 / 用例 / 个人 / 一次性覆盖） | 解决"用例只描述做什么、缺少具体数据"的真实痛点 |
-| **AI 自驱执行** | LLM tool-calling 循环 + Playwright MCP；每步 accessibility 快照 + diff 增量；token 预算守卫 | 非 selector，靠语义定位元素，对页面 DOM 重构强健 |
-| **三层数据可信度** | reliable（真实物料）/ synthesized（AI 自造）/ data_failure；业务通过率自动排除"数据问题导致的失败" | 区分"功能问题"与"测试数据问题" |
-| **批量执行 + 用例间状态隔离** | 批量任务在每条用例之间执行 `reset_for_next_case`：关闭多余 page、回到 `about:blank`、保留登录态 | 避免上一条用例的弹窗 / 表单状态污染下一条 |
-| **执行可观察性** | SSE 实时事件流；每步 snapshot before/after + tool_call 时间线；视频 + trace + 截图 | 失败现场可完整回放 |
-| **实时画面（noVNC）** | 容器内 Xvfb + x11vnc + websockify，前端 iframe 直接看 chromium 实时画面 | 服务器部署也能"看见"AI 的浏览器操作 |
-| **内网 VPN 兼容** | 双路代理（http_login 专用 + chromium 出口分别可控）；docker-compose.vpn.yml 一键开启 | 被测系统在公司内网时仍可用 |
-| **自动清理 cron** | 视频 / 截图 / trace / storage_state / 物料 file 按保留天数自动回收 | 长期运行不爆盘 |
+| 🎯 **执行环境** | URL / 浏览器配置 / 前置步骤模板（http_login / ai_login / state_inject）；登录态 storage_state 自动复用 | 一次配置，N 次复用 |
+| 📦 **测试物料体系** | 6 种类型（string / secret / multiline / file / random / dataset）× 5 级层级（项目默认 / 环境 / 用例 / 个人 / 一次性覆盖） | 解决"用例只描述做什么、缺少具体数据"的真实痛点 |
+| 🤖 **AI 自驱执行** | LLM tool-calling 循环 + Playwright MCP；每步 accessibility 快照 + diff 增量；token 预算守卫 | 非 selector，靠语义定位元素，对页面 DOM 重构强健 |
+| ✅ **三层数据可信度** | reliable（真实物料）/ synthesized（AI 自造）/ data_failure；业务通过率自动排除"数据问题导致的失败" | 区分"功能问题"与"测试数据问题" |
+| 🔄 **批量执行 + 用例间状态隔离** | 批量任务在每条用例之间执行 `reset_for_next_case`：关闭多余 page、回到 `about:blank`、保留登录态 | 避免上一条用例的弹窗 / 表单状态污染下一条 |
+| 🎬 **执行可观察性** | SSE 实时事件流；每步 snapshot before/after + tool_call 时间线；视频 + trace + 截图 | 失败现场可完整回放 |
+| 🖥️ **实时画面（noVNC）** | 容器内 Xvfb + x11vnc + websockify，前端 iframe 直接看 chromium 实时画面 | 服务器部署也能"看见"AI 的浏览器操作 |
+| 🌐 **内网 VPN 兼容** | 双路代理（http_login 专用 + chromium 出口分别可控）；docker-compose.vpn.yml 一键开启 | 被测系统在公司内网时仍可用 |
+| 🧹 **自动清理 cron** | 视频 / 截图 / trace / storage_state / 物料 file 按保留天数自动回收 | 长期运行不爆盘 |
 
-> **三期路线**：把一二期的"AI 主动操作"统一抽象为 Skill 体系（与 OpenClaw 协议对齐），支持自定义 skill 上传、触发词召回、Agent 自主调用。详见 [`docs/PHASE3_DESIGN.md`](docs/PHASE3_DESIGN.md)。
+> **🚧 三期路线**：把一二期的"AI 主动操作"统一抽象为 Skill 体系（与 OpenClaw 协议对齐），支持自定义 skill 上传、触发词召回、Agent 自主调用。详见 [`docs/PHASE3_DESIGN.md`](docs/PHASE3_DESIGN.md)。
 
 ---
 
-## 系统架构
+## 🏗️ 系统架构
 
 ### 容器拓扑
 
@@ -121,20 +137,40 @@
 
 | 端口 | 服务 | 是否对外暴露 | 配置项 |
 |---|---|---|---|
-| 80 | frontend nginx | 是（生产 SPA + API 反代） | — |
+| 80 → host:`${FRONTEND_PORT}` | frontend nginx | 是（用户访问入口） | `.env` 里 `FRONTEND_PORT=8080` 改宿主端口（容器内固定 80） |
 | 8000 → host:`${BACKEND_PORT}` | backend uvicorn | 是（开发 / 直接调 API 用） | `.env` 里 `BACKEND_PORT=7008` 改宿主端口（容器内固定 8000） |
 | 5432 → host:`${POSTGRES_PORT}` | PostgreSQL | 默认暴露（生产可关，仅留容器网络） | `.env` 里 `POSTGRES_PORT` |
 | 6080 | websockify (noVNC) | **否**（仅容器网络，前端经 `/novnc/` 反代） | — |
 | 5173 | vite dev server | 仅本地开发 | — |
 
-> **端口冲突时怎么改？** 后端宿主端口在 `docker-compose.yml` 里写成 `${BACKEND_PORT:-8000}:8000`，
-> 容器内部仍是 8000（前端 nginx 通过 docker 网络反代 `backend:8000`，不受宿主端口影响）。
-> 服务器上若 8000 已被占用，只需在 `.env` 加一行 `BACKEND_PORT=7008`，
-> 然后 `docker compose up -d backend` 重建容器即可，无需改任何代码。
+#### 浏览器访问规则
+
+| 部署场景 | `.env` 配置 | 浏览器访问地址 |
+|---|---|---|
+| 默认（80 空闲） | `FRONTEND_PORT=80`（或不写） | `http://localhost` 或 `http://your-server-ip` —— **不用带端口** |
+| 80 已被占用 | `FRONTEND_PORT=8080` | `http://your-server-ip:8080` —— **必须带端口** |
+| 上游有 Caddy/Nginx + HTTPS | `FRONTEND_PORT=8080`（任意，不直接暴露用户）| `https://your-domain.com`（由上游反代到容器 8080） |
+
+> **为什么默认不带端口？** HTTP 默认走 80 端口，浏览器自动补全；只有改成非 80 端口（如 8080）才需要在 URL 里显式写 `:8080`。
+> HTTPS 同理：默认走 443 端口，URL 里也不需要写 `:443`。
+
+#### 端口冲突时怎么改？
+
+后端 / 前端宿主端口都是可配置的，**容器内部端口固定不变**（前端 nginx 通过 docker 内部网络反代 `backend:8000`，不受宿主端口影响）：
+
+```bash
+# 服务器上 80 / 8000 都被其它项目占用
+echo "FRONTEND_PORT=7080" >> .env
+echo "BACKEND_PORT=7008"  >> .env
+docker compose up -d              # 重建受影响的容器即可，无需改任何代码
+```
+
+- 浏览器访问入口：`http://your-server-ip:7080`
+- 后端 API（直接调试）：`http://your-server-ip:7008`
 
 ---
 
-## 技术栈
+## 🛠️ 技术栈
 
 | 层 | 选型 | 关键考量 |
 |---|---|---|
@@ -155,21 +191,26 @@
 | **HTTP 客户端** | ofetch | 体积小、原生 SSE |
 | **包管理** | uv（后端）+ pnpm（前端） | 极速、严格 lockfile |
 | **容器化** | Docker Compose | 三容器最小架构 |
+| **CI / CD** | GitHub Actions + GHCR | 镜像自动构建推送（详见 [`docs/DEPLOYMENT_GHCR.md`](docs/DEPLOYMENT_GHCR.md)） |
 | **进程模型** | uvicorn 单 worker | 内存内 ChatStreamHub / ExecutionStreamHub 不可跨进程；扩容需先迁移到 Redis pub/sub 或 PG LISTEN/NOTIFY |
 
 ---
 
-## 项目结构
+## 📂 项目结构
 
 ```
 AITestPlatform/
 ├── docker-compose.yml          # 生产部署编排（默认）
 ├── docker-compose.dev.yml      # 开发数据库（仅 db）
-├── docker-compose.vpn.yml      # VPN 场景 override（详见 §部署方案 D-1）
+├── docker-compose.vpn.yml      # VPN 场景 override（详见 §部署方式 D-1）
+├── docker-compose.prod.yml     # GHCR 镜像拉取部署（详见 docs/DEPLOYMENT_GHCR.md）
 ├── run.sh                      # 主命令入口（dev / up / down / install / db-* / test / lint / format ...）
 ├── Makefile                    # run.sh 的子集（兼容传统 make 用户）
-├── scripts/init.sh             # 一键初始化（首次部署推荐）
+├── scripts/
+│   ├── init.sh                 # 一键初始化（首次部署推荐）
+│   └── release.sh              # 打 tag + 推送 GHCR 触发 CI
 ├── .env.example                # 环境变量模板
+├── .github/workflows/          # GitHub Actions：build-and-push.yml
 ├── docs/                       # 设计文档
 │   ├── NEW_PLATFORM_DESIGN.md  # 一期总体设计
 │   ├── IMPLEMENTATION_PLAN.md  # 一期实施计划
@@ -177,7 +218,9 @@ AITestPlatform/
 │   ├── PHASE2_IMPLEMENTATION_PLAN.md
 │   ├── PHASE3_DESIGN.md        # 三期 Skill 体系设计（路线图）
 │   ├── PHASE3_IMPLEMENTATION_PLAN.md
-│   └── PROMPT_MANAGEMENT_DESIGN.md
+│   ├── PROMPT_MANAGEMENT_DESIGN.md
+│   ├── DEPLOYMENT_GHCR.md      # GHCR 拉取镜像部署完整教程
+│   └── IMAGE_SLIMMING_PLAN.md  # 镜像瘦身计划（基线 / 路线 / 验证矩阵）
 ├── backend/                    # FastAPI 后端
 │   ├── Dockerfile              # 含 Node + Chromium + Xvfb + noVNC
 │   ├── entrypoint.sh           # 启动 Xvfb / x11vnc / websockify / 等待 DB / 迁移 / 建管理员
@@ -216,13 +259,40 @@ AITestPlatform/
 
 ---
 
-## 部署前提
+## 🎨 界面展示
+
+> 📸 **截图陆续补充中**。如果你已经在使用本项目，欢迎 PR 截图到 `docs/screenshots/` 目录帮助新用户快速了解产品。
+
+期望补齐的截图清单：
+
+- [ ] 登录页（`/login`）
+- [ ] 数据仪表盘（项目维度统计 / 双视图通过率）
+- [ ] 测试用例管理（模块树 + AI 生成）
+- [ ] 需求管理（文档上传 + AI 评审）
+- [ ] AI 智能对话（流式 SSE）
+- [ ] UI 自动化执行监控（SSE 时间线 + 实时画面 noVNC）
+- [ ] 执行报告详情（视频 / trace / 截图回放）
+- [ ] 测试物料管理（6 种类型 × 5 级层级）
+- [ ] 提示词模板 + 版本回滚
+- [ ] LLM Provider 配置
+
+---
+
+## 🚀 快速开始
+
+### 在线体验
+
+> 🌐 在线 demo 暂未上线，建议本地或服务器部署体验。
+> 项目所有功能均可通过 Docker Compose 一键启动（约 5–10 分钟首次构建）。
+
+### 环境要求
 
 | 部署方式 | 必需 | 推荐版本 |
 |---|---|---|
 | **本地开发** | Docker（仅 DB） + Python 3.11 + Node 18+ + uv + pnpm | Docker Desktop 最新；Python 3.11；Node 20 LTS |
 | **Docker 本地部署** | Docker 20.10+ + Compose v2 | Docker Desktop 4.30+ |
 | **Linux 服务器部署** | Docker 20.10+ + Compose v2 | Ubuntu 22.04 / Debian 12 / RHEL 9 |
+| **GHCR 拉取部署** | Docker 20.10+ + Compose v2 + 公网（或 GHCR mirror） | 见 [`docs/DEPLOYMENT_GHCR.md`](docs/DEPLOYMENT_GHCR.md) |
 | **VPN 场景（D-1）** | 上面任一 + 宿主机已连接公司 VPN + 一个 HTTP 代理工具（pproxy / mitmproxy / tinyproxy 任一） | — |
 | **VPN 场景（D-2）** | Linux 主机 + WireGuard 或 OpenVPN 配置文件 | Ubuntu 22.04+ |
 
@@ -230,11 +300,47 @@ AITestPlatform/
 
 - CPU：2 核
 - 内存：4 GB（Chromium + Node MCP 子进程吃 1-1.5 GB）
-- 磁盘：10 GB（基础镜像 ~1 GB；视频 / trace 按 `UI_MEDIA_RETENTION_DAYS` 滚动）
+- 磁盘：10 GB（基础镜像 ~4 GB；视频 / trace 按 `UI_MEDIA_RETENTION_DAYS` 滚动）
+
+### 5 步速通（推荐首次体验路径）
+
+```bash
+# 1. 克隆代码
+git clone <repo-url> && cd AITestPlatform
+
+# 2. 一键初始化（自动 .env / build / up / 健康检查）
+bash scripts/init.sh
+
+# 3. 浏览器访问
+# 前端：http://localhost                     ← 默认 80 端口，URL 里不需要写
+# 后端 Swagger：http://localhost:8000/docs    ← DEBUG=true 时
+# 服务器部署同理：http://your-server-ip       ← 默认 80 端口
+# 若 .env 改了 FRONTEND_PORT=8080：http://your-server-ip:8080
+
+# 4. 登录默认账号
+# 用户名：admin
+# 密码：admin123 （首次登录后立即修改！）
+
+# 5. 配一个 LLM Provider
+# 进入「系统设置 → LLM 配置」，新增一个 OpenAI 协议兼容的 Provider
+# （DeepSeek / 通义 / Ollama / GPT 等任选）即可开始使用 AI 功能
+```
+
+详细部署方式见 [📦 部署方式](#-部署方式)。
 
 ---
 
-## 部署方案
+## 📦 部署方式
+
+提供五种部署模式，覆盖从本地开发到生产环境的所有场景：
+
+| 方案 | 适用场景 | 启动方式 |
+|---|---|---|
+| **A** | 本地开发联调（前后端热更新） | `./run.sh dev` |
+| **B** | 本地或测试环境 Docker 一键 | `bash scripts/init.sh` |
+| **C** | Linux 服务器部署 | 同 B + 生产化清单 |
+| **D** | 被测系统在公司内网 / 需 VPN | D-1 宿主机代理 / D-2 容器内 VPN |
+| **E** | 服务器最快部署（拉 GHCR 镜像，无需 build） | 见 [`docs/DEPLOYMENT_GHCR.md`](docs/DEPLOYMENT_GHCR.md) |
 
 ### 方案 A：本地开发（前后端热更新）
 
@@ -318,8 +424,6 @@ cp .env.example .env
 ./run.sh db-reset                      # 重置（开发用，会清数据！）
 ```
 
----
-
 ### 方案 B：Docker 本地一键部署（推荐）
 
 最常用方式。三个容器（db / backend / frontend），一行命令启动。
@@ -342,14 +446,18 @@ bash scripts/init.sh
 
 | 服务 | 地址 |
 |---|---|
-| 前端 | http://localhost |
+| 前端 | http://localhost（端口默认 80，由 `.env` 的 `FRONTEND_PORT` 控制；80 是 HTTP 默认端口，URL 不需要写） |
 | 后端 Swagger | http://localhost:8000/docs（端口默认 8000，由 `.env` 的 `BACKEND_PORT` 控制） |
 
 默认管理员：`admin / admin123`，**首次登录后立即修改！**
 
-> **服务器上 8000 已被占用？** 在 `.env` 里加 `BACKEND_PORT=7008`（或其它空闲端口），
-> 然后重启即可：`docker compose up -d backend`。容器内 uvicorn 仍监听 8000，
-> 前端 nginx 反代不受影响（详见上文 [端口](#端口) 章节）。
+> **服务器上 80 / 8000 被其它项目占用？** 在 `.env` 里加：
+> ```bash
+> FRONTEND_PORT=8080      # 浏览器访问端口（改了之后访问要带端口）
+> BACKEND_PORT=7008       # API 端口
+> ```
+> 然后 `docker compose up -d` 重建即可。容器内 nginx / uvicorn 仍是 80 / 8000，
+> 前端反代不受宿主端口影响（详见上文 [端口](#端口) 章节）。
 
 #### B-2：手动逐步（看清楚每一步）
 
@@ -396,8 +504,6 @@ docker compose up -d --build backend
 > ```bash
 > docker compose -f docker-compose.yml -f docker-compose.vpn.yml up -d backend
 > ```
-
----
 
 ### 方案 C：Linux 服务器部署
 
@@ -484,8 +590,6 @@ services:
           cpus: "2.0"
           memory: 3G
 ```
-
----
 
 ### 方案 D：被测系统在公司内网（VPN 场景）
 
@@ -698,9 +802,38 @@ docker compose exec backend curl -sS -o /dev/null -w 'HTTP=%{http_code}\n' \
 | 复杂度 | 低 | 中 |
 | 推荐场景 | 个人开发联调内网应用 | 服务器长期运行、不依赖宿主 |
 
+### 方案 E：GHCR 拉取预构建镜像（最快，3-5 分钟部署）
+
+适合服务器已有 Docker、希望跳过本地 build 的场景。GitHub Actions 会自动构建并推送镜像到 GHCR（GitHub Container Registry），服务器直接 pull 即用。
+
+```bash
+# 服务器上（不需要 git clone 整个仓库）
+mkdir -p ~/aitestplatform && cd ~/aitestplatform
+
+# 下载部署需要的两个文件
+curl -fsSL -o docker-compose.prod.yml \
+  https://raw.githubusercontent.com/<your-username>/AITestPlatform/main/docker-compose.prod.yml
+curl -fsSL -o .env.example \
+  https://raw.githubusercontent.com/<your-username>/AITestPlatform/main/.env.example
+cp .env.example .env
+
+# 必填：GHCR_OWNER + IMAGE_TAG + SECRET_KEY + ENCRYPT_KEY + ADMIN_PASSWORD
+# 端口冲突：BACKEND_PORT=7008
+nano .env
+
+# 拉取并启动
+docker compose -f docker-compose.prod.yml --env-file .env pull
+docker compose -f docker-compose.prod.yml --env-file .env up -d
+
+# 验证
+curl http://localhost:${BACKEND_PORT:-8000}/api/health
+```
+
+详细步骤、镜像 tag 策略、CI 工作流配置、回滚、国内 GHCR 加速等，见 [`docs/DEPLOYMENT_GHCR.md`](docs/DEPLOYMENT_GHCR.md)。
+
 ---
 
-## 配置详解
+## ⚙️ 配置详解
 
 `.env`（基于 `.env.example`）所有变量按域分组：
 
@@ -754,7 +887,7 @@ UI_STEP_SCREENSHOT_TYPE=png          # png 清晰大 / jpeg 小失真
 UI_SNAPSHOT_MAX_CHARS=3000
 UI_SNAPSHOT_DIFF_CONTEXT=2
 
-# 内网代理（VPN 场景；详见 §部署方案 D-1）
+# 内网代理（VPN 场景；详见 §部署方式 D-1）
 UI_HTTP_LOGIN_PROXY=                 # 仅 http_login 走它；空 = 关闭
 UI_BROWSER_PROXY=                    # chromium 启动时透传给 --proxy-server
 UI_BROWSER_PROXY_BYPASS=localhost,127.0.0.1,host.docker.internal,db,backend,frontend
@@ -792,7 +925,7 @@ TEST_DATA_AUDIT_RETENTION_DAYS=180   # 审计日志（预留）
 
 ---
 
-## 模块清单
+## 📋 模块清单
 
 ### 后端 API（按模块）
 
@@ -816,29 +949,39 @@ TEST_DATA_AUDIT_RETENTION_DAYS=180   # 审计日志（预留）
 
 ### 前端页面
 
-```
 /login                登录
+![项目截图](./image/login_image.png)
 /                     仪表盘（项目筛选）
+![项目截图](./image/yibiao_image.png)
 /projects             项目列表 / 设置 / 成员
+![项目截图](./image/project_image.png)
 /requirements         需求列表 / 详情（评审）
+![项目截图](./image/requirements_image.png)
 /testcases            用例列表 / 模块树 / 详情 / AI 生成 / 执行 UI
+![项目截图](./image/testcases_image.png)
 /test-data            测试物料管理（物料集 + 条目 + 导入导出）
+![项目截图](./image/wuliao_image.png)
 /chat                 AI 对话（多会话）
+![项目截图](./image/ai_image.png)
 /ui-automation
   /environments       UI 执行环境
   /history            执行历史
   /executions/:id     执行详情（含视频 / trace / 时间线）
   /executions/:id/monitor   实时监控（SSE + 实时画面 noVNC）
+![项目截图](./image/uiTest_image.png)
+![项目截图](./image/uiBaogao_image.png)
 /settings
   /llm                LLM 配置
   /prompts            提示词管理
   /users              用户管理
   /roles              角色管理
-```
+![项目截图](./image/llm_image.png)
+
+![项目截图](./image/user_image.png)
 
 ---
 
-## UI 自动化使用指南
+## 🎬 UI 自动化使用指南
 
 ### 准备物料
 
@@ -893,7 +1036,7 @@ TEST_DATA_AUDIT_RETENTION_DAYS=180   # 审计日志（预留）
 
 ---
 
-## 实时画面（noVNC）
+## 🖥️ 实时画面（noVNC）
 
 容器内有头浏览器（headless=false）的画面通过浏览器实时投出。
 
@@ -911,7 +1054,7 @@ chromium ─→ Xvfb :99 ─→ x11vnc 5900 ─→ websockify 6080 ─→ nginx 
 
 ---
 
-## 运维常用命令
+## 🔧 运维常用命令
 
 ```bash
 # ── 服务生命周期 ──
@@ -948,7 +1091,7 @@ curl -X POST -H "Authorization: Bearer <admin-token>" http://localhost:${BACKEND
 
 ---
 
-## 排错速查
+## 🐛 排错速查
 
 按现象索引；每条给出根因和最简解法。
 
@@ -960,6 +1103,7 @@ curl -X POST -H "Authorization: Bearer <admin-token>" http://localhost:${BACKEND
 | `entrypoint.sh: chmod 700 ...: Operation not permitted` | volume 挂载点权限被宿主映射成 root，容器里非 root 改不了 | 不影响功能，可忽略；或 `volumes:` 加 `:Z`（SELinux）/ `:U`（rootless） |
 | backend 启动卡在 "Waiting for database" 然后 30s 退出 | DB 容器没起来 / 健康检查失败 | `docker compose logs db`；检查端口冲突 5432 |
 | `Bind for 0.0.0.0:8000 failed: port is already allocated` | 服务器上 8000 已被其它项目占用 | `.env` 加 `BACKEND_PORT=7008`（或其它空闲端口），`docker compose up -d backend` 重建即可。容器内 uvicorn 仍是 8000，前端反代不受影响 |
+| `Bind for 0.0.0.0:80 failed: port is already allocated` | 服务器上 80 已被其它 nginx / Apache / 项目占用 | `.env` 加 `FRONTEND_PORT=8080`（或其它空闲端口），`docker compose up -d frontend` 重建。改完后访问需带端口：`http://your-server-ip:8080` |
 | `alembic upgrade head` 报 `target database is not up to date` | 上次部署中断，`alembic_version` 表残留 | `docker compose exec backend alembic stamp head` 然后重启 |
 
 ### UI 自动化
@@ -1004,7 +1148,21 @@ curl -X POST -H "Authorization: Bearer <admin-token>" http://localhost:${BACKEND
 
 ---
 
-## 开发与贡献
+## 🐳 镜像瘦身
+
+当前 backend 镜像约 **3.91 GB**（含 Chromium + Node + Xvfb + 全字体），有完整的瘦身路线图：
+
+| 阶段 | 节省预估 | 风险 | 内容 |
+|---|---|---|---|
+| Phase 1（零风险） | ~215 MB | 零 | uv cache 清理、`.dockerignore` 加严、Chromium locales 裁剪、apt clean |
+| Phase 2（低风险） | ~370 MB | 低 | 多阶段构建、移除 fonts-noto-cjk-extra、Node 官方 slim 镜像复制、noVNC 静态包裁剪 |
+| Phase 3（按需） | ~290 MB | 中 | 文泉驿微米黑替代 Noto CJK（视觉变化）、BuildKit squash 压缩 |
+
+完整的基线分析、改动方案、PR 拆分、验证矩阵见 [`docs/IMAGE_SLIMMING_PLAN.md`](docs/IMAGE_SLIMMING_PLAN.md)。
+
+---
+
+## 🛠️ 开发与贡献
 
 ### 代码风格
 
@@ -1043,6 +1201,15 @@ docker compose exec backend alembic upgrade head
 ./run.sh test -k test_reset_for_next_case
 ```
 
+### 发版（推送 GHCR 镜像）
+
+```bash
+# 一键打 tag + 推送，触发 GitHub Actions 构建并 push 到 GHCR
+bash scripts/release.sh v1.2.0
+```
+
+详见 [`docs/DEPLOYMENT_GHCR.md`](docs/DEPLOYMENT_GHCR.md)。
+
 ### 常见误区（避免新成员踩坑）
 
 1. **uvicorn 必须 `--workers 1`**：`ChatStreamHub` / `ExecutionStreamHub` 是进程内字典，多 worker 会让 SSE 订阅者落到另一个 worker 上，订到空 hub 后立刻收到 `done`。如要扩容先迁移到 Redis pub/sub。
@@ -1050,20 +1217,51 @@ docker compose exec backend alembic upgrade head
 3. **加密的物料 / API key 用 `ENCRYPT_KEY`**：跨环境必须同步；忘了备份这个 key 等于丢失所有 secret。
 4. **alembic 迁移要审一遍**：autogenerate 偶尔会漏 server_default 或乱加 drop。
 
+### 贡献流程
+
+1. Fork 本仓库
+2. 创建特性分支：`git checkout -b feat/your-feature`
+3. 提交更改：`git commit -m 'feat(scope): your message'`
+4. 推送到分支：`git push origin feat/your-feature`
+5. 在 GitHub 上发起 Pull Request
+
+提交信息建议遵循 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/v1.0.0/)。
+
 ---
 
-## 路线图
+## 🗺️ 路线图
 
 | 阶段 | 状态 | 内容 |
 |---|---|---|
-| 一期 | 已完成 | 测试管理 + AI 助手（需求评审 / 用例生成 / 对话） |
-| 二期 | 已完成 | UI 自动化（环境 / 物料 / 执行 / 报告 / 实时画面） |
-| 三期 | 设计完成，待实施 | Skill 体系（与 OpenClaw 协议对齐）、关键词召回升级为 Lazy Tool 化 |
-| Phase 11 增强 | 可选 | ARQ + Redis 异步任务队列；多 worker / 多副本部署 |
+| 一期 | ✅ 已完成 | 测试管理 + AI 助手（需求评审 / 用例生成 / 对话） |
+| 二期 | ✅ 已完成 | UI 自动化（环境 / 物料 / 执行 / 报告 / 实时画面 / VPN 兼容 / 镜像瘦身） |
+| 三期 | 🚧 设计完成，待实施 | Skill 体系（与 OpenClaw 协议对齐）、关键词召回升级为 Lazy Tool 化 |
+| Phase 11 增强 | 📋 可选 | ARQ + Redis 异步任务队列；多 worker / 多副本部署 |
+| 接口自动化 | 💭 规划中 | 集成 HTTPRunner / pytest 风格的接口测试，复用物料 + 报告体系 |
+| App 自动化 | 💭 规划中 | Appium 集成，复用 Live View 看真机操作 |
 
 ---
 
-## 进一步阅读
+## 📞 交流与反馈
+
+
+- **GitHub Issues**：Bug / 功能请求 / 部署问题 → 直接提 issue（建议先看 [§排错速查](#-排错速查)）
+- **GitHub Discussions**：架构讨论 / 用法咨询 / 经验分享
+- **PR 欢迎**：bug 修复 / 文档改进 / 截图补充 / 国际化等都欢迎
+
+## 📷 微信交流群 / QQ 群暂未建立。如果项目积累一定用户后会在此处补充入群方式，下方添加作者，来源请备注 gitHub。
+![项目截图](./image/wechat.jpg)
+
+
+## 支持本项目‌，您的鼓励是对作者更新最大的动力！
+本项目通过开源代码免费为大家提供服务。然而，其持续的开发、维护和服务器运营需要投入大量时间和资源。
+![项目截图](./image/pay.jpg)
+
+
+## 后续规划：完成三期建设开发，agent 扩展支持 skill技能包等。
+---
+
+## 📚 进一步阅读
 
 | 文档 | 内容 |
 |---|---|
@@ -1074,9 +1272,38 @@ docker compose exec backend alembic upgrade head
 | [`docs/PHASE3_DESIGN.md`](docs/PHASE3_DESIGN.md) | 三期 Skill 体系设计 |
 | [`docs/PHASE3_IMPLEMENTATION_PLAN.md`](docs/PHASE3_IMPLEMENTATION_PLAN.md) | 三期实施计划 |
 | [`docs/PROMPT_MANAGEMENT_DESIGN.md`](docs/PROMPT_MANAGEMENT_DESIGN.md) | 提示词管理子系统设计 |
+| [`docs/DEPLOYMENT_GHCR.md`](docs/DEPLOYMENT_GHCR.md) | GHCR 镜像构建 / 拉取部署完整教程 |
+| [`docs/IMAGE_SLIMMING_PLAN.md`](docs/IMAGE_SLIMMING_PLAN.md) | 镜像瘦身计划（基线 / 路线 / PR 拆分 / 验证矩阵） |
 
 ---
 
-## License
+## 🙏 致谢
 
-MIT
+本项目基于以下优秀开源项目构建，致谢：
+
+- [FastAPI](https://fastapi.tiangolo.com/) — 现代异步 Python web 框架
+- [Vue.js](https://vuejs.org/) — 渐进式 JavaScript 框架
+- [Naive UI](https://www.naiveui.com/) — Vue 3 组件库（轻量、TS 原生）
+- [SQLAlchemy](https://www.sqlalchemy.org/) + [Alembic](https://alembic.sqlalchemy.org/) — Python ORM 与迁移
+- [Playwright](https://playwright.dev/) + [`@playwright/mcp`](https://github.com/microsoft/playwright-mcp) — 浏览器自动化与 MCP 协议
+- [OpenAI Python SDK](https://github.com/openai/openai-python) — LLM 调用
+- [uv](https://github.com/astral-sh/uv) — 极速 Python 包管理
+- [pnpm](https://pnpm.io/) — 高效 Node.js 包管理
+- [noVNC](https://novnc.com/) + [websockify](https://github.com/novnc/websockify) — 浏览器内 VNC 客户端
+- [PostgreSQL](https://www.postgresql.org/) — 可靠成熟的关系型数据库
+
+---
+
+## 📄 License
+
+本项目采用 [MIT 许可证](LICENSE)。
+
+---
+
+<div align="center">
+
+**如果这个项目对你有帮助，请点击 ⭐ Star 支持一下！**
+
+Made with ❤️ by AITestPlatform Contributors
+
+</div>

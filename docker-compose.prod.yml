@@ -44,7 +44,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-aitest_platform}
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
       ENCRYPT_KEY: ${ENCRYPT_KEY:-}
-      DEBUG: "false"
+      # DEBUG 从 .env 读，默认 false（生产强烈建议保持 false：关闭 /docs / /redoc 防泄露）
+      DEBUG: ${DEBUG:-false}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@aitest.local}
