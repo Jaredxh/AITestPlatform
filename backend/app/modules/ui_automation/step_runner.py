@@ -63,7 +63,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-MAX_STEP_TOOL_ITERATIONS = 5
+# 单步骤内 LLM tool-calling 循环上限（最后一轮会被强制 ``tool_choice="none"`` 收尾）。
+#
+# 历史值 5 对"看一眼 → 输入 → 点击 → 兜底 snapshot"这种 happy path 够用，但加入二期
+# 验收增强后的「数据使用与兜底原则」流程（用例硬编码占位失败 → 先 snapshot 看错误
+# 信号 → 调 platform_get_test_data 查真实物料 → 用新值再 type → 再 click → 收尾）需要
+# 至少 6~7 轮，5 卡得太死。提到 8 兼顾两边：
+# - happy path 不变（多 3 轮额度从来用不上）
+# - 复杂 fallback 场景能完整跑完一次"重试"
+# - 仍由 ``TokenBudget`` 兜底防失控（超了立即终止）
+MAX_STEP_TOOL_ITERATIONS = 8
 
 
 # ─── Public types ────────────────────────────────────────────────────
@@ -409,11 +418,18 @@ class StepRunner:
             tool_choice: str | None = None
             if is_last and iteration > 0:
                 tool_choice = "none"
+                # 最后一轮工具被强制关掉，给 AI 一个明确收尾指令；不限制长度，
+                # 让推理模型把判断过程交代清楚（早期版本写"用一句话"会截断 reasoning，
+                # 推理模型典型表现：reasoning_content 写满 max_tokens 后 final content
+                # 截空，AssertionJudge 拿到空快照判失败 —— 二期验收 #f6513ebb 类）
                 messages.append({
                     "role": "user",
                     "content": (
-                        "请立即基于以上 tool 结果用一句话总结你做了什么、当前页面状态如何，"
-                        "不要再调用工具。"
+                        "本轮已到工具调用上限。请基于以上工具结果，用中文自然语言总结：\n"
+                        "1) 你做了哪些关键操作；\n"
+                        "2) 当前页面状态如何（已经到了哪个页面 / 看到了什么内容 / 报了什么错）；\n"
+                        "3) 如果遇到了无效数据信号，是否按「数据使用与兜底原则」改用了物料里的真实值。\n"
+                        "把推理交代清楚，长度不限。本轮不再调用工具。"
                     ),
                 })
 

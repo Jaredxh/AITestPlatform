@@ -83,6 +83,26 @@ def test_render_manifest_contains_rules_and_fallback_section() -> None:
     assert "platform_synthesize_data" in md
 
 
+def test_render_manifest_contains_hardcoded_data_fallback_guidance() -> None:
+    """二期验收：manifest 必须明确告诉 AI 当用例步骤里直接写死的 ID/账号/名称
+    操作失败（看到「未找到」/「不存在」类信号）时，要主动调
+    ``platform_get_test_data`` 找语义匹配的真实物料并重试。
+
+    没这段时，AI 看到失败信号也不会去查物料，会原地用占位反复重试。"""
+    r = TestDataResolver.from_merge_dict(
+        {"u": TestDataItem(key="u", value_type="string", value_text="x", description="账号")},
+    )
+    md = r.render_manifest_markdown()
+    assert "用例硬编码数据失败时的物料 fallback" in md
+    assert "platform_get_test_data" in md
+    # 必须列出触发关键词，AI 才能识别失败信号
+    triggers = ["未找到", "不存在", "无权限", "列表空"]
+    hits = [t for t in triggers if t in md]
+    assert hits, "必须列出触发 fallback 的页面错误信号"
+    # 必须强调"业务语义匹配"，而不是 key 完全一致
+    assert "语义" in md, "必须强调按业务语义匹配 key（如 creator_id 类）"
+
+
 def test_serialize_for_audit_redacts_secret() -> None:
     enc = crypto.encrypt("sekrit")
     r = TestDataResolver.from_merge_dict(

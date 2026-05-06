@@ -93,7 +93,13 @@ def _schema_templates() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "platform_get_test_data",
-                "description": "读取已合并物料条目的非敏感信息（secret 仅返回类型提示）。",
+                "description": (
+                    "读取已合并物料条目的非敏感信息（secret 仅返回类型提示）。"
+                    "**典型触发场景**：用例步骤里直接写死的 ID/账号/名称等占位值操作后页面出现"
+                    "「未找到/不存在/无权限/列表空」等数据无效信号时，先用本工具按业务语义查找"
+                    "真实物料（如步骤要查 creator_id，可尝试 'creator_id'、'valid_creator_id'、"
+                    "'test_creator_id' 等语义匹配 key），用其真实值重试，避免反复用占位失败。"
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {"key": {"type": "string", "description": "物料 key"}},
