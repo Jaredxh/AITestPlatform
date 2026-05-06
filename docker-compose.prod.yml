@@ -65,7 +65,9 @@ services:
       UI_NOVNC_ENABLED: ${UI_NOVNC_ENABLED:-true}
       UI_NOVNC_PORT: ${UI_NOVNC_PORT:-6080}
     ports:
-      - "8000:8000"
+      # 宿主机端口可配置（容器内 uvicorn 监听 8000 不变）
+      # 改方法：在 .env 写 BACKEND_PORT=7008（避免与服务器其它服务冲突）
+      - "${BACKEND_PORT:-8000}:8000"
     volumes:
       - backend_uploads:/app/uploads
       - test_data:/app/uploads/test-data

@@ -69,8 +69,12 @@ docker compose up -d
 echo ""
 echo "[5/5] 等待服务就绪..."
 
+# 读取 .env 中的 BACKEND_PORT（宿主机映射端口），默认 8000
+BACKEND_PORT="$(grep -E '^BACKEND_PORT=' .env 2>/dev/null | tail -n1 | cut -d= -f2)"
+BACKEND_PORT="${BACKEND_PORT:-8000}"
+
 for i in $(seq 1 60); do
-    if curl -sf http://localhost:8000/api/health >/dev/null 2>&1; then
+    if curl -sf "http://localhost:${BACKEND_PORT}/api/health" >/dev/null 2>&1; then
         echo "  ✓ 后端服务就绪"
         break
     fi
@@ -94,7 +98,7 @@ echo "  ✅ AITestPlatform 初始化完成！"
 echo "==========================================="
 echo ""
 echo "  🌐 前端地址:  http://localhost"
-echo "  📡 后端 API:  http://localhost:8000/docs"
+echo "  📡 后端 API:  http://localhost:${BACKEND_PORT}/docs"
 echo ""
 echo "  默认管理员账号:"
 echo "    用户名: admin"

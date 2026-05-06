@@ -177,6 +177,10 @@ SECRET_KEY=<随机 64 位字符串>           # python -c "import secrets;print(
 ENCRYPT_KEY=<Fernet 密钥>              # python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"
 ADMIN_PASSWORD=<强密码>
 
+# 端口冲突时改这一项（服务器 8000 被其它项目占用）：
+# BACKEND_PORT=7008                    # 默认 8000，可改成任意空闲端口
+                                       # 容器内 uvicorn 始终监听 8000，无需改代码
+
 # 添加 GHCR 引用变量：
 echo "" >> .env
 echo "# ========== GHCR 镜像引用 ==========" >> .env
@@ -219,7 +223,8 @@ docker compose -f docker-compose.prod.yml ps
 
 ```bash
 # 后端健康检查
-curl http://localhost:8000/api/health
+# 默认 8000；若 .env 里设置了 BACKEND_PORT（例如 7008），用对应端口
+curl "http://localhost:${BACKEND_PORT:-8000}/api/health"
 # {"status":"ok"}
 
 # 前端
@@ -338,7 +343,7 @@ GitHub Actions workflow 自动给每次构建打多个 tag：
   □ private 镜像已 docker login ghcr.io
   □ docker compose pull 成功（4 GB ~5 分钟）
   □ docker compose up -d 后 3 个容器全 running
-  □ curl http://localhost:8000/api/health 返回 ok
+  □ curl http://localhost:${BACKEND_PORT:-8000}/api/health 返回 ok
   □ 浏览器能登录平台
 ```
 
