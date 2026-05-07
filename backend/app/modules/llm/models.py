@@ -1,7 +1,7 @@
 import uuid
 
 from sqlalchemy import Boolean, Float, ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.postgresql import JSON, UUID
+from sqlalchemy.dialects.postgresql import JSON, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -32,6 +32,9 @@ class ChatSession(Base):
     llm_config_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("llm_configs.id"), nullable=True)
     system_prompt: Mapped[str | None] = mapped_column(Text)
 
+    #: Phase 12 manual skill 选中等技术上下文（JSON：`manual_skill_ids` 等）
+    chat_context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     user = relationship("User", lazy="selectin")
     llm_config = relationship("LLMConfig", lazy="selectin")
     messages: Mapped[list["ChatMessage"]] = relationship(
@@ -49,5 +52,11 @@ class ChatMessage(Base):
     tokens_used: Mapped[int | None] = mapped_column(Integer)
     model_used: Mapped[str | None] = mapped_column(String(100))
     meta_data: Mapped[dict | None] = mapped_column(JSON)
+    #: Phase 12 / Task 12.6 — 该消息触发的 skill 调用日志 id（lazy load skill 时写入）
+    skill_invocation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("skill_usage_logs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     session: Mapped["ChatSession"] = relationship(back_populates="messages")

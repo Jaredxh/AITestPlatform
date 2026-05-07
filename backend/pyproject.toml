@@ -22,6 +22,13 @@ dependencies = [
     "mcp>=1.27.0",
     "playwright>=1.59.0",
     "ddddocr>=1.6.1",
+    "python-frontmatter>=1.1.0",
+    "pyyaml>=6.0.3",
+    "openpyxl>=3.1.5",
+    # 三期 Skills 的 ``http_get_json`` / ``http_post_json`` 工具直接 import httpx
+    # 发起请求；之前 fastapi/openai 间接带进来能跑，但运行时依赖应明面声明，
+    # 防止上游瘦身后突然 ImportError。
+    "httpx>=0.27.0",
 ]
 
 [project.optional-dependencies]
@@ -29,7 +36,6 @@ dev = [
     "ruff>=0.5.0",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
-    "httpx>=0.27.0",
 ]
 
 [tool.ruff]

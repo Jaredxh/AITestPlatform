@@ -62,6 +62,12 @@ class _FakeSessionContext:
     async def __aexit__(self, *_):
         return False
 
+    async def commit(self) -> None:
+        return None
+
+    async def rollback(self) -> None:
+        return None
+
 
 class _FakePersistence:
     """收集所有写动作，最后比对。"""

@@ -127,6 +127,11 @@ const routeToMenuKey: Record<string, string> = {
   UIExecutionMonitor: "UIExecutionHistoryGlobal",
   ProjectSettings: "ProjectList",
   RequirementDetail: "RequirementList",
+  // Phase 12：技能编辑路由 → 高亮「技能包管理」子菜单
+  SkillEditor: "SkillManagement",
+  // Phase 12 Task 12.6：技能使用统计页已收敛为 SkillManagement 顶部按钮入口
+  // （独立子菜单不直观、与"技能包管理"高度耦合）。访问该页面时仍高亮父菜单。
+  SkillUsageStats: "SkillManagement",
 };
 
 const currentRoute = computed(() => {
@@ -188,6 +193,10 @@ const allMenuOptions: AppMenuOption[] = [
     children: [
       { label: "LLM 配置", key: "LLMConfig" },
       { label: "提示词管理", key: "PromptManagement" },
+      // Phase 12 Task 12.5：与提示词管理同级，靠 isAdmin 兜底；细粒度
+      // skill:* 权限由 router.beforeEach 拦截（无 skill:view 会回首页）
+      // 「使用统计」入口已收敛为「技能包管理」页内顶部按钮，避免菜单冗余。
+      { label: "技能包管理", key: "SkillManagement" },
       { label: "用户管理", key: "UserManagement" },
       { label: "角色管理", key: "RoleManagement" },
     ],
@@ -217,6 +226,9 @@ const routeLabelMap: Record<string, string> = {
   ProjectSettings: "项目设置",
   LLMConfig: "LLM 配置",
   PromptManagement: "提示词管理",
+  SkillManagement: "技能包管理",
+  SkillEditor: "技能编辑",
+  SkillUsageStats: "技能使用统计",
   UserManagement: "用户管理",
   RoleManagement: "角色管理",
 };
@@ -224,6 +236,9 @@ const routeLabelMap: Record<string, string> = {
 const settingsRoutes = new Set([
   "LLMConfig",
   "PromptManagement",
+  "SkillManagement",
+  "SkillEditor",
+  "SkillUsageStats",
   "UserManagement",
   "RoleManagement",
 ]);

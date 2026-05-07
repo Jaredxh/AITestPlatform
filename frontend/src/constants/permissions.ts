@@ -123,6 +123,24 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
     ],
   },
   {
+    // Phase 12 Task 12.5：技能包独立菜单。后端 7 个 skill:* 权限通过
+    // ``init_data._seed_roles`` 自动同步到系统角色，前端这里同步暴露，
+    // 让 RoleEditDialog 能勾选"技能包管理"开关。
+    key: "menu:skill",
+    label: "技能包管理",
+    routeNames: ["SkillManagement", "SkillEditor", "SkillUsageStats"],
+    description: "管理项目技能包：导入 / 导出 / 编辑 / 安全扫描 / Chat 激活 / 使用统计",
+    permissions: [
+      { key: "skill:view", label: "查看技能", description: "浏览列表 / 详情 / 版本 / 使用统计" },
+      { key: "skill:edit", label: "编辑技能", description: "新建 / 修改 / 启停（自动重新扫描）" },
+      { key: "skill:delete", label: "删除技能", description: "内置技能不可删除" },
+      { key: "skill:import", label: "导入技能", description: "ZIP 上传 / URL 拉取" },
+      { key: "skill:export", label: "导出技能", description: "下载 OpenClaw 兼容 ZIP" },
+      { key: "skill:scan", label: "重新安全扫描" },
+      { key: "skill:chat_activate", label: "对话内手动激活", description: "在 chat 中选中 manual 技能" },
+    ],
+  },
+  {
     key: "menu:user",
     label: "用户管理",
     routeNames: ["UserManagement"],

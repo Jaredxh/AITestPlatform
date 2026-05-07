@@ -22,6 +22,10 @@ logging.getLogger("app").setLevel(logging.INFO)
 
 
 def create_app() -> FastAPI:
+    from app.modules.skills.platform_tools import ensure_platform_tools_registered
+
+    ensure_platform_tools_registered()
+
     app = FastAPI(
         title=settings.PROJECT_NAME,
         version="0.1.0",
@@ -50,6 +54,7 @@ def create_app() -> FastAPI:
     from app.modules.projects.router import router as projects_router
     from app.modules.prompts.router import router as prompts_router
     from app.modules.requirements.router import router as requirements_router
+    from app.modules.skills.router import router as skills_router
     from app.modules.test_data.router import router as test_data_router
     from app.modules.testcases.router import router as testcases_router
     from app.modules.ui_automation.router import router as ui_automation_router
@@ -63,6 +68,7 @@ def create_app() -> FastAPI:
     app.include_router(chat_router)
     app.include_router(requirements_router)
     app.include_router(prompts_router)
+    app.include_router(skills_router)
     app.include_router(testcases_router)
     app.include_router(dashboard_router)
     app.include_router(ui_automation_router)
@@ -78,6 +84,19 @@ def create_app() -> FastAPI:
 
         await init_roles()
         await sync_built_in_prompts()
+
+        from sqlalchemy import select
+
+        from app.database import async_session_factory
+        from app.modules.projects.models import Project
+        from app.modules.skills.built_in import sync_built_in_skills
+
+        async with async_session_factory() as db:
+            rows = await db.execute(select(Project.id, Project.owner_id))
+            for project_id, owner_id in rows.all():
+                await sync_built_in_skills(db, project_id, created_by=owner_id)
+            await db.commit()
+
         # Task 11.2 周期清理（asyncio task）；CLEANUP_INTERVAL_HOURS=0 时 no-op
         start_cleanup_scheduler()
 

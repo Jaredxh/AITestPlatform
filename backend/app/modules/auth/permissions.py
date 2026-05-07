@@ -52,6 +52,14 @@ class Permissions:
     PROMPT_VIEW = "prompt:view"
     PROMPT_EDIT = "prompt:edit"
     PROMPT_DELETE = "prompt:delete"
+    # Skill 技能包（Phase 12 Task 12.4）
+    SKILL_VIEW = "skill:view"
+    SKILL_EDIT = "skill:edit"
+    SKILL_DELETE = "skill:delete"
+    SKILL_IMPORT = "skill:import"
+    SKILL_EXPORT = "skill:export"
+    SKILL_SCAN = "skill:scan"
+    SKILL_CHAT_ACTIVATE = "skill:chat_activate"
     # 管理
     USER_MANAGE = "user:manage"
     ROLE_MANAGE = "role:manage"
@@ -98,6 +106,13 @@ SYSTEM_ROLES: dict[str, dict] = {
             Permissions.TEST_DATA_EDIT,
             Permissions.TEST_DATA_REVEAL,
             Permissions.TEST_DATA_IMPORT,
+            Permissions.SKILL_VIEW,
+            Permissions.SKILL_EDIT,
+            Permissions.SKILL_DELETE,
+            Permissions.SKILL_IMPORT,
+            Permissions.SKILL_EXPORT,
+            Permissions.SKILL_SCAN,
+            Permissions.SKILL_CHAT_ACTIVATE,
             # 项目经理需要为团队定制提示词模板（如评审风格、用例生成口吻）
             Permissions.PROMPT_VIEW,
             Permissions.PROMPT_EDIT,
@@ -125,6 +140,12 @@ SYSTEM_ROLES: dict[str, dict] = {
             Permissions.TEST_DATA_VIEW,
             Permissions.TEST_DATA_EDIT,
             Permissions.TEST_DATA_IMPORT,
+            Permissions.SKILL_VIEW,
+            Permissions.SKILL_EDIT,
+            Permissions.SKILL_IMPORT,
+            Permissions.SKILL_EXPORT,
+            Permissions.SKILL_SCAN,
+            Permissions.SKILL_CHAT_ACTIVATE,
             # 测试人员只读提示词（生成用例 / 评审走的是项目内已有模板，不允许
             # 改模板免得影响他人）
             Permissions.PROMPT_VIEW,
@@ -141,6 +162,7 @@ SYSTEM_ROLES: dict[str, dict] = {
             Permissions.UI_EXEC_VIEW,
             Permissions.TEST_DATA_VIEW,
             Permissions.PROMPT_VIEW,
+            Permissions.SKILL_VIEW,
         ],
     },
 }

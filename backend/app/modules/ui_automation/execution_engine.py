@@ -85,6 +85,33 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+async def _release_engine_db_transaction(db: Any) -> None:
+    """结束当前 ORM 事务，避免长耗时步骤把连接卡在 *idle in transaction*。
+
+    Engine 在 ``async with db_session_factory() as db`` 内包揽整批 UI 执行。
+    SQLAlchemy 2 ``autobegin`` 会在首次 ``execute`` 后自动打开事务；随后若只有
+    浏览器 / LLM（中间不再打 SQL），连接会一直停在「事务内空闲」——云数据库常
+    配 ``idle_in_transaction_session_timeout``，到点直接掐连接；下一次再查
+    ``testcases``（``TestDataResolver.with_case_overrides``）就会在已关闭连接
+    上做 ``fetch()``，抛出 asyncpg::
+
+        InterfaceError: cannot call PreparedStatement.fetch(): the underlying
+        connection is closed
+
+    执行落盘走的 ``persistence.*`` 都是独立 ``async_session_factory``，不依赖本条
+    session；本条 session 主要为 resolver / ``platform_*`` 读物料与合成推断服务，
+    ``commit()`` 可把读事务收口，不改变业务语义（无跨连接必须原子化的写）。
+    """
+    try:
+        await db.commit()
+    except Exception:  # noqa: BLE001
+        logger.exception("engine session commit failed; rolling back")
+        try:
+            await db.rollback()
+        except Exception:  # noqa: BLE001
+            logger.exception("engine session rollback after failed commit")
+
+
 # ─── 输入参数 ────────────────────────────────────────────────────────
 
 
@@ -538,11 +565,17 @@ class ExecutionEngine:
                     outcome.error_message = (
                         f"严格物料模式：发现 {len(alerts)} 个缺料 key，拒绝执行"
                     )
+                    await _release_engine_db_transaction(db)
                     return
 
             if not testcases:
                 outcome.status = "completed"
+                await _release_engine_db_transaction(db)
                 return
+
+            # 浏览器 / 前置 / MCP / 逐步 LLM 可能极长：先收口本条 session 的事务，
+            # 否则会长时间 idle-in-transaction（见 ``_release_engine_db_transaction``）。
+            await _release_engine_db_transaction(db)
 
             # 4. 起浏览器 + 注册 MCP 工具
             bundle = await _open_bundle(self.deps, environment, inputs.execution_id)
@@ -829,6 +862,7 @@ class ExecutionEngine:
         # 重新注册 platform 工具到 case_resolver
         unregister_data_tools(inputs.execution_id)
         register_data_tools(inputs.execution_id, case_resolver, db=db)
+        await _release_engine_db_transaction(db)
 
         case_row = await self.deps.persistence.create_case_result(
             execution_id=inputs.execution_id,
@@ -1022,6 +1056,7 @@ class ExecutionEngine:
                         "screenshot_url": screenshot_url,
                     },
                 )
+                await _release_engine_db_transaction(db)
 
                 if budget_warning := budget.maybe_warning():
                     await stream.append("budget_warning", {"message": budget_warning})
@@ -1073,6 +1108,8 @@ class ExecutionEngine:
                 case_error = f"{type(exc).__name__}: {exc}"
                 break
 
+        await _release_engine_db_transaction(db)
+
         # 收尾本用例
         # Task 9.7：debug 暂停被打断的用例，剩余步骤当作 skipped；状态从 passed
         # 改成 skipped/error 让前端不会误以为"通过"。判断要在 finalize 之前。
@@ -1120,6 +1157,7 @@ class ExecutionEngine:
                 "error_message": case_error,
             },
         )
+        await _release_engine_db_transaction(db)
 
         if case_status == "passed":
             outcome.passed += 1

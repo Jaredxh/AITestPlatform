@@ -14,6 +14,11 @@ from app.modules.auth import models as _auth_models  # noqa: F401
 from app.modules.llm import models as _llm_models  # noqa: F401
 from app.modules.projects import models as _projects_models  # noqa: F401
 from app.modules.requirements import models as _requirements_models  # noqa: F401
+from app.modules.skills import models as _skills_models  # noqa: F401
 from app.modules.test_data import models as _test_data_models  # noqa: F401
 from app.modules.testcases import models as _testcases_models  # noqa: F401
 from app.modules.ui_automation import models as _ui_automation_models  # noqa: F401
+
+from app.modules.skills.platform_chat_tools import ensure_platform_chat_tools_registered
+
+ensure_platform_chat_tools_registered()

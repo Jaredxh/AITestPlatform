@@ -1,10 +1,56 @@
 FROM python:3.11-slim
 
+# 构建阶段网络代理（宿主通过 docker-compose ``build.args`` / ``--build-arg`` 传入）。
+# ``docker-compose.vpn.yml`` 只作用于**运行中**容器，默认不会带进 ``docker build``；
+# 若构建时 apt/playwright 访问 deb.debian.org 超时，请在 .env 里配下面三条后
+# 再 ``docker compose up -d --build``（详见根目录 ``.env.example`` §Docker 构建代理）。
+#
+# Docker Desktop（Mac）：代理在宿主机上监听时，构建容器内请写
+# ``http://host.docker.internal:<端口>``，不要写 127.0.0.1（那会指向构建容器自身）。
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ENV HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    NO_PROXY=${NO_PROXY}
+
+# 构建期 Debian 网络加固（不传变量时也可用，不影响海外用户等价性）：
+# - 拉高 apt 重试与超时 —— CDN 上大列表「中途几个 .deb」偶发超时很常见（你贴的日志是先
+#   更新了索引再卡在池子里的 xfonts-* / xvfb）。
+# - APT_MIRROR_HOST 非空时把 ``deb.debian.org`` 换成镜像 hostname（阿里云等），绕过
+#   部分网络访问 Fastly 不稳；留空则不替换，与历史行为一致。
+#
+# Docker Desktop（macOS）：系统 VPN **往往不会**带进构建用的 Linux VM，所以「电脑上
+# VPN 开了」≠ ``docker build`` 里也走 VPN；要么配 ``HTTP_PROXY=host.docker.internal:…``
+#（见上文），要么配 ``APT_MIRROR_HOST``（详见根 ``.env.example``）。
+ARG APT_MIRROR_HOST=
+RUN set -eux; \
+    mkdir -p /etc/apt/apt.conf.d; \
+    printf '%s\n' \
+      'Acquire::Retries "8";' \
+      'Acquire::http::Timeout "120";' \
+      'Acquire::https::Timeout "120";' \
+    > /etc/apt/apt.conf.d/80-docker-build; \
+    if [ -n "${APT_MIRROR_HOST}" ]; then \
+      find /etc/apt -type f \( -name '*.sources' -o -name '*.list' \) \
+        -exec sed -i \
+          -e "s|https://deb.debian.org|http://${APT_MIRROR_HOST}|g" \
+          -e "s|http://deb.debian.org|http://${APT_MIRROR_HOST}|g" \
+          {} +; \
+    fi
+
 # ──────────────────────────────────────────────────────────────────────
-# 一期基础依赖（已上线，勿动）
+# 基础依赖
+#
+# - libpq5 / curl / ca-certificates / gnupg：一期基线
+# - antiword / catdoc：一期需求文档解析（.doc / .ppt 等老格式）
+# - git：三期 Skills 导入（``importer.py`` 通过 ``git+url`` / ``*.git`` 链接
+#   导入 SKILL 时直接 ``subprocess.run(["git", "clone", ...])``）。Debian
+#   slim 默认不带，缺这一行容器里调 ``/api/skills/import-url`` 会直接
+#   FileNotFoundError: [Errno 2] No such file or directory: 'git'。
 # ──────────────────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq5 curl ca-certificates gnupg antiword catdoc \
+    libpq5 curl ca-certificates gnupg antiword catdoc git \
     && rm -rf /var/lib/apt/lists/*
 
 # ──────────────────────────────────────────────────────────────────────

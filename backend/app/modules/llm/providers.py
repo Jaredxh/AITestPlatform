@@ -7,6 +7,7 @@
 import time
 from collections.abc import AsyncGenerator
 
+import httpx
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionChunk
 
@@ -16,6 +17,14 @@ PROVIDER_BASE_URLS: dict[str, str] = {
     "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "ollama": "http://localhost:11434/v1",
 }
+
+
+# httpx.Timeout 在流式语义下，``read`` 是 **相邻字节包之间** 的最大空闲时间。
+# 这正是我们要防的故障模式：网关已经把 SSE 连接保持住、却不再吐 chunk —— 看起来
+# "AI 输出几个字就卡住"，但 OpenAI SDK 默认 600s 才超时。45s 既比正常 token
+# 间隔大很多，又能在网关半开/丢包时让上层在 1 分钟内拿到明确的 ReadTimeout，
+# 转成前端一条可读 error，避免把 DB 连接、后台 task 一起拖到 10 分钟。
+LLM_STREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=45.0, write=60.0, pool=60.0)
 
 
 def build_client(
@@ -28,6 +37,10 @@ def build_client(
     api_key 留空时只对 Ollama / 自部署 provider 兜底成 ``"ollama"`` 占位
     （Ollama 默认不校验 key）；其他 provider 留空让 OpenAI SDK 自己抛
     AuthenticationError 而不是用假 key 打真接口产生迷惑性 401。
+
+    显式禁用 SDK 自动重试（``max_retries=0``）：上层 ``_handle_chat_stream``
+    已经实现了"每轮 round + finalize"的 UX，SDK 默认 2 次静默重试只会把
+    "token-by-token 卡住"放大到 1.5 分钟以上才报错。
     """
     resolved_base = base_url or PROVIDER_BASE_URLS.get(provider)
     if api_key:
@@ -40,7 +53,12 @@ def build_client(
             f"provider={provider!r} 未提供 api_key；"
             "请到「系统设置 → LLM 配置」补全 API Key 后重试"
         )
-    return AsyncOpenAI(api_key=resolved_key, base_url=resolved_base)
+    return AsyncOpenAI(
+        api_key=resolved_key,
+        base_url=resolved_base,
+        timeout=LLM_STREAM_TIMEOUT,
+        max_retries=0,
+    )
 
 
 async def test_connection(

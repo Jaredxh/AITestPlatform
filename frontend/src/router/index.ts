@@ -134,6 +134,26 @@ const routes: RouteRecordRaw[] = [
         meta: { permission: "requirement:view" },
       },
       {
+        // Phase 12 Task 12.5：技能包管理（项目维度，依赖 currentProject）
+        path: "settings/skills",
+        name: "SkillManagement",
+        component: () => import("@/views/settings/SkillManagement.vue"),
+        meta: { permission: "skill:view" },
+      },
+      {
+        path: "settings/skills/:id/edit",
+        name: "SkillEditor",
+        component: () => import("@/views/settings/SkillEditor.vue"),
+        meta: { permission: "skill:edit" },
+      },
+      {
+        // Phase 12 / Task 12.6 — 技能使用统计页（项目维度）
+        path: "settings/skills/stats",
+        name: "SkillUsageStats",
+        component: () => import("@/views/settings/SkillUsageStats.vue"),
+        meta: { permission: "skill:view" },
+      },
+      {
         path: "settings/users",
         name: "UserManagement",
         component: () => import("@/views/settings/UserManagement.vue"),

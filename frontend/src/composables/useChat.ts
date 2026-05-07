@@ -9,6 +9,7 @@ import {
   uploadFileApi,
 } from "@/services/chat";
 import type { ChatSession, ChatMessage, FileUploadResult } from "@/services/chat";
+import type { SkillActivatedEvent } from "@/services/skills";
 import { useSSE } from "./useSSE";
 
 export interface PendingFile {
@@ -50,6 +51,11 @@ export function useChat() {
    * 也避免会话 A 还在流式生成时，切到会话 B 再切回 A 看到"答案丢失"。
    */
   const messagesBySession = ref<Record<string, ChatMessage[]>>({});
+  /**
+   * Phase 12 / Task 12.6 — 最近一条 skill_activated SSE 事件。
+   * 仅当当前会话产生时才会被赋值；ChatView 把它 watch 给 SkillActivationHint。
+   */
+  const latestSkillActivation = ref<SkillActivatedEvent | null>(null);
   /** 各会话独立的流式中间态：切到 B 再切回 A 时还能看到 A 正在生成的内容。 */
   const streamsBySession = ref<Record<string, StreamingState>>({});
   /** 各会话独立的"是否在流式中"，用于停止按钮和"是否要在会话列表上显示动画"。 */
@@ -396,6 +402,32 @@ export function useChat() {
           // action 事件 content 是该轮意图的最终内容，覆盖（而不是追加）。
           _setStream(sessionId, { content: actionContent });
         },
+        onEvent(event) {
+          // Task 12.6 — 后端推 ``skill_activated`` 事件时，仅当对应是当前
+          // 可见会话时再亮出 banner，避免后台另一会话的激活提示干扰用户。
+          if (
+            event.type === "skill_activated" &&
+            sessionId === currentSessionId.value
+          ) {
+            const skillId = String(event.skill_id ?? "");
+            const slug = String(event.slug ?? "");
+            const name = String(event.name ?? "");
+            const reason = String(event.activation_reason ?? "manual") as
+              SkillActivatedEvent["activation_reason"];
+            if (skillId && slug && name) {
+              latestSkillActivation.value = {
+                skill_id: skillId,
+                slug,
+                name,
+                activation_reason: reason,
+                matched_trigger:
+                  typeof event.matched_trigger === "string"
+                    ? event.matched_trigger
+                    : null,
+              };
+            }
+          }
+        },
         onError(msg) {
           finalize(msg);
         },
@@ -550,6 +582,7 @@ export function useChat() {
     isLoadingSessions,
     isLoadingMessages,
     pendingFiles,
+    latestSkillActivation,
     loadSessions,
     selectSession,
     createNewSession,

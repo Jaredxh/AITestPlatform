@@ -2,6 +2,13 @@ ARG NODE_IMAGE=node:20-alpine
 ARG NGINX_IMAGE=nginx:alpine
 FROM ${NODE_IMAGE} AS builder
 
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ENV HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    NO_PROXY=${NO_PROXY}
+
 ENV npm_config_registry=https://registry.npmmirror.com
 ENV COREPACK_NPM_REGISTRY=https://registry.npmmirror.com
 

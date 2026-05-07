@@ -20,6 +20,14 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      # 与运行时代理分离：仅在 ``docker compose build`` 时传给 Dockerfile 的 ARG/ENV，
+      # 解决部分网络下 ``deb.debian.org`` / Playwright ``--with-deps`` apt 超时。
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+        # 参见 backend/Dockerfile 顶注释：不换源时仅占位空字符串，行为与未加此参数一致
+        APT_MIRROR_HOST: ${APT_MIRROR_HOST:-}
     restart: unless-stopped
     environment:
       POSTGRES_HOST: db
@@ -50,6 +58,10 @@ services:
       # 仅 http_login 走它；LLM 调用 / ai_login / state_inject 都不受影响。
       # 例：``UI_HTTP_LOGIN_PROXY=http://host.docker.internal:8118``。
       UI_HTTP_LOGIN_PROXY: ${UI_HTTP_LOGIN_PROXY:-}
+      # 三期 Skill 包 ``http_get_json`` / ``http_post_json`` 出口代理（可选）。
+      # 留空时按 ``UI_HTTP_LOGIN_PROXY`` → ``HTTP_PROXY`` 回退；想让"技能包 HTTP"
+      # 与"二期 http_login"使用不同代理时再单独配置这一条。
+      SKILL_HTTP_PROXY: ${SKILL_HTTP_PROXY:-}
       # chromium 出口代理（VPN 场景下"被测系统"在公司内网时启用）。
       # ``BrowserBundle`` 启动时把这条作为 ``--proxy-server`` 透传给 chromium，
       # 用例执行 / ai_login / state_inject 期间所有浏览器流量都走该代理。
@@ -86,6 +98,10 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
     restart: unless-stopped
     ports:
       # 宿主机端口可配置（容器内 nginx 监听 80 不变）

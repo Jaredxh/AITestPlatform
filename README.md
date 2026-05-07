@@ -1192,6 +1192,7 @@ UI_SNAPSHOT_DIFF_CONTEXT=2
 UI_HTTP_LOGIN_PROXY=                 # 仅 http_login 走它；空 = 关闭
 UI_BROWSER_PROXY=                    # chromium 启动时透传给 --proxy-server
 UI_BROWSER_PROXY_BYPASS=localhost,127.0.0.1,host.docker.internal,db,backend,frontend
+SKILL_HTTP_PROXY=                    # 三期 Skill 包 http_get_json/http_post_json 走它；空 = 回退到 UI_HTTP_LOGIN_PROXY → HTTP_PROXY
 
 # 实时画面（noVNC）
 UI_NOVNC_ENABLED=true                # false 仅启 Xvfb（headed 仍可跑，但看不到画面）
@@ -1524,7 +1525,7 @@ bash scripts/release.sh v1.2.0
 |---|---|---|
 | 一期 | ✅ 已完成 | 测试管理 + AI 助手（需求评审 / 用例生成 / 对话） |
 | 二期 | ✅ 已完成 | UI 自动化（环境 / 物料 / 执行 / 报告 / 实时画面 / VPN 兼容 / 镜像瘦身） |
-| 三期 | 🚧 设计完成，待实施 | Skill 体系（与 OpenClaw 协议对齐）、关键词召回升级为 Lazy Tool 化 |
+| 三期 | ✅ 已完成 | Skill 体系（OpenClaw 协议对齐）：触发词 / always / agent_callable 自动激活、`http_get_json` / `http_post_json` 内置工具、SKILL.md 自我授权白名单、git+url / zip 导入、用量统计与安全扫描 |
 | Phase 11 增强 | 📋 可选 | ARQ + Redis 异步任务队列；多 worker / 多副本部署 |
 | 接口自动化 | 💭 规划中 | 集成 HTTPRunner / pytest 风格的接口测试，复用物料 + 报告体系 |
 | App 自动化 | 💭 规划中 | Appium 集成，复用 Live View 看真机操作 |
@@ -1546,7 +1547,7 @@ bash scripts/release.sh v1.2.0
 ![项目截图](./image/pay.jpg)
 
 
-## 后续规划：完成三期建设开发，agent 扩展支持 skill技能包等。
+## 后续规划：接口自动化、App 自动化、ARQ + Redis 异步任务队列等。
 ---
 
 ## 📚 进一步阅读

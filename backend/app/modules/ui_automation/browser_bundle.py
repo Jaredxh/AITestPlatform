@@ -74,6 +74,7 @@ from playwright.async_api import (
     async_playwright,
 )
 
+from app.config import settings
 from app.modules.ui_automation.mcp_bridge import (
     MCPBridge,
     MCPBridgeError,
@@ -411,6 +412,20 @@ class BrowserBundle:
         port = _allocate_free_port()
         self.cdp_endpoint = f"http://127.0.0.1:{port}"
 
+        # entrypoint.sh 会在 exec uvicorn **之前** export DISPLAY=:99，但部分运行
+        # 方式（自定义 CMD、进程管理器、或未继承完整 env 的中间层）可能让 Python
+        # 进程里看不到 DISPLAY——``_has_display_server`` 误判 → 强行 headless，
+        # Chromium 不向 Xvfb 画像素 → noVNC 整屏黑。这里用 settings 与 Xvfb 默认对齐。
+        if _is_container_environment() and not self.options.headless:
+            if not (os.environ.get("DISPLAY") or "").strip():
+                raw = (settings.UI_VNC_DISPLAY or ":99").strip() or ":99"
+                os.environ["DISPLAY"] = raw if raw.startswith(":") else f":{raw}"
+                logger.info(
+                    "BrowserBundle[%s] DISPLAY was unset; exporting DISPLAY=%s for headed Xvfb",
+                    self.execution_id,
+                    os.environ["DISPLAY"],
+                )
+
         self.pw = await async_playwright().start()
 
         # 容器 / 无显示器场景下若用户配了 headed 模式，强制降级到 headless：
@@ -434,6 +449,16 @@ class BrowserBundle:
             *_docker_chromium_safety_args(),
             *self.options.extra_browser_args,
         ]
+        if not effective_headless and _is_container_environment():
+            # Xvfb 无真实 GPU；近年 Chromium 默认 Ozone/EGL 在虚拟帧缓冲上易出现
+            # 「VNC 全黑但执行仍可走」——显式 X11 + 关 GPU 合成，与 Dockerfile 内有头栈一致。
+            browser_args.extend(
+                (
+                    "--ozone-platform=x11",
+                    "--disable-gpu",
+                    "--disable-gpu-compositing",
+                ),
+            )
 
         # persistent context 要求一个真实存在的 user_data_dir。每个 execution
         # 用独立 tempdir → 互不污染 + close 时整目录删掉。

@@ -10,6 +10,13 @@
     </div>
 
     <div class="message-bubble__main">
+      <!-- Phase 12 / Task 12.6 — AI 调用 skill 的徽章（点击展开 SKILL.md） -->
+      <skill-usage-badge
+        v-if="!isUser && message.skill_invocation_id && skillBadgeId"
+        :skill-id="skillBadgeId"
+        :reason="skillBadgeReason"
+      />
+
       <div class="message-bubble__content">
         <!-- User message -->
         <div
@@ -136,6 +143,8 @@ import { NAvatar, NProgress, NTag } from "naive-ui";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import type { ChatMessage } from "@/services/chat";
+import type { SkillActivationReason } from "@/services/skills";
+import SkillUsageBadge from "@/components/chat/SkillUsageBadge.vue";
 
 const props = defineProps<{
   message: ChatMessage;
@@ -147,6 +156,28 @@ const isUser = computed(() => props.message.role === "user");
 
 const actionMeta = computed(() => props.message.meta_data as Record<string, any> | null);
 const actionType = computed(() => actionMeta.value?.action_type as string | undefined);
+
+/**
+ * 当前消息消费的 skill 信息：
+ * - meta_data.skill_id / skill_name 由后台异步事件回写（agent_callable lazy load 时
+ *   服务端会把 skill_id 顺便塞入 meta_data，前端兜底用）；
+ * - 没有 cached 时仍能显示徽章（只是 modal 打开后再去拉详情）。
+ */
+const skillBadgeId = computed<string | null>(() => {
+  const meta = actionMeta.value || {};
+  const fromMeta = (meta.skill_id as string | undefined) || null;
+  // skill_invocation_id 是 SkillUsageLog.id 而非 Skill.id；当 meta 里没有 skill_id 时，
+  // 我们仍以 skill_invocation_id 触发徽章渲染，但必须有 skill_id 才能 fetch 详情。
+  // 没有 skill_id 时退化为不可点击的纯文本徽章会更稳——这里直接用 fromMeta。
+  return fromMeta;
+});
+
+const skillBadgeReason = computed<SkillActivationReason>(() => {
+  const reason = (actionMeta.value || {}).skill_activation_reason as
+    | SkillActivationReason
+    | undefined;
+  return reason || "agent_callable";
+});
 
 const actionTagLabel = computed(() => {
   switch (actionType.value) {

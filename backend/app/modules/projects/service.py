@@ -62,7 +62,10 @@ async def create_project(db: AsyncSession, data: ProjectCreateRequest, owner: Us
     await db.flush()
 
     from app.modules.prompts.service import init_project_prompts
+    from app.modules.skills.built_in import sync_built_in_skills
+
     await init_project_prompts(db, project.id, owner.id)
+    await sync_built_in_skills(db, project.id, created_by=owner.id)
 
     await db.refresh(project)
     return project

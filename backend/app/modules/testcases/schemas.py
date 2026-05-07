@@ -219,3 +219,32 @@ class GenerationBatchResponse(BaseModel):
     testcases: list[dict] = []
 
     model_config = {"from_attributes": True}
+
+
+# ── Excel 导入 / 导出 ──
+
+
+class TestcaseImportError(BaseModel):
+    """单行导入错误。row 是 Excel 行号（含表头算 1，所以数据从 2 开始）。"""
+
+    row: int
+    message: str
+    title: str | None = None
+
+
+class TestcaseImportReport(BaseModel):
+    """批量导入回执。
+
+    HTTP 永远是 200（除非整体结构错），由前端按 ``errors`` 长度决定提示口径。
+    ``created`` / ``updated`` / ``skipped`` 各自累计；行级错误聚合在 ``errors``。
+    """
+
+    total: int = 0
+    created: int = 0
+    updated: int = 0
+    skipped: int = 0
+    created_modules: list[str] = Field(
+        default_factory=list,
+        description="导入过程中按路径自动创建的模块路径（``a/b/c``）。",
+    )
+    errors: list[TestcaseImportError] = Field(default_factory=list)

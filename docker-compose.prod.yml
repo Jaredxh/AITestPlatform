@@ -70,6 +70,8 @@ services:
       TEST_DATA_FILE_RETENTION_DAYS: ${TEST_DATA_FILE_RETENTION_DAYS:-90}
       # http_login / browser 代理（VPN 内网场景启用）
       UI_HTTP_LOGIN_PROXY: ${UI_HTTP_LOGIN_PROXY:-}
+      # 三期 Skill 包 HTTP 工具的出口代理（可选；空 = 回退到 UI_HTTP_LOGIN_PROXY / HTTP_PROXY）
+      SKILL_HTTP_PROXY: ${SKILL_HTTP_PROXY:-}
       UI_BROWSER_PROXY: ${UI_BROWSER_PROXY:-}
       UI_BROWSER_PROXY_BYPASS: ${UI_BROWSER_PROXY_BYPASS:-localhost,127.0.0.1,host.docker.internal,db,backend,frontend}
       # noVNC 实时画面

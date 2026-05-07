@@ -8,6 +8,16 @@ from sqlalchemy.orm import selectinload
 
 from app.core.exceptions import AppException, NotFoundException
 from app.modules.auth.models import User
+from app.modules.testcases.excel_io import (
+    EXCEL_IMPORT_MAX_ROWS,
+    ParsedRow,
+    build_export_workbook,
+    build_module_path_index,
+    build_template_workbook,
+    join_module_path,
+    parse_workbook,
+    split_module_path,
+)
 from app.modules.testcases.models import Testcase, TestcaseModule, TestcaseStep
 from app.modules.testcases.schemas import (
     ModuleCreateRequest,
@@ -16,6 +26,8 @@ from app.modules.testcases.schemas import (
     ModuleUpdateRequest,
     StepResponse,
     TestcaseCreateRequest,
+    TestcaseImportError,
+    TestcaseImportReport,
     TestcaseListItem,
     TestcaseResponse,
     TestcaseUpdateRequest,
@@ -439,3 +451,324 @@ async def _get_testcase_or_404(db: AsyncSession, testcase_id: uuid.UUID) -> Test
     if not testcase:
         raise NotFoundException("用例不存在")
     return testcase
+
+
+# ════════════════════════════════════════
+#  Excel 模板 / 导入 / 导出
+# ════════════════════════════════════════
+
+
+def get_template_xlsx() -> bytes:
+    """返回标准用例模板（含示例行 + 字段说明 sheet）。"""
+    return build_template_workbook(sample=True)
+
+
+async def export_testcases_xlsx(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    *,
+    module_id: uuid.UUID | None = None,
+    priority: str | None = None,
+    status: str | None = None,
+    source: str | None = None,
+    exec_result: str | None = None,
+    search: str | None = None,
+) -> bytes:
+    """按当前列表筛选条件导出 xlsx。
+
+    与 ``list_testcases`` 复用筛选语义，让"页面上看到什么 → 导出就是什么"，
+    避免用户在导出时再被一次"看到了 200 条但只导了 20 条"的体验断点。
+    导出**不分页**：导出本身就是"拿走全部"。
+    """
+    # 复用 list_testcases 的过滤构造，但去掉 limit/offset
+    base_query = select(Testcase).where(Testcase.project_id == project_id)
+    if module_id:
+        module_ids = await _collect_module_ids_with_descendants(db, project_id, module_id)
+        base_query = base_query.where(Testcase.module_id.in_(module_ids))
+    if priority:
+        base_query = base_query.where(Testcase.priority == priority)
+    if status:
+        base_query = base_query.where(Testcase.status == status)
+    if source:
+        base_query = base_query.where(Testcase.source == source)
+    if exec_result:
+        base_query = base_query.where(Testcase.exec_result == exec_result)
+    if search:
+        pattern = f"%{search}%"
+        base_query = base_query.where(Testcase.title.ilike(pattern))
+
+    base_query = base_query.options(
+        selectinload(Testcase.steps),
+        selectinload(Testcase.module),
+    ).order_by(Testcase.case_no.asc(), Testcase.created_at.asc())
+
+    result = await db.execute(base_query)
+    testcases = list(result.scalars().unique().all())
+
+    # 一次性拉模块树构造 ``id → path`` 映射，避免按行查 DB
+    modules_result = await db.execute(
+        select(TestcaseModule).where(TestcaseModule.project_id == project_id)
+    )
+    modules = list(modules_result.scalars().unique().all())
+    id_to_path, _ = build_module_path_index(modules)
+
+    def resolver(module_id_value):
+        if module_id_value is None:
+            return ""
+        return id_to_path.get(str(module_id_value), "")
+
+    return build_export_workbook(testcases, resolver)
+
+
+async def import_testcases_xlsx(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    raw_xlsx: bytes,
+    user: User,
+) -> TestcaseImportReport:
+    """从 xlsx 字节流批量导入用例。
+
+    匹配规则（与 PRD 一致）：
+    - 行内"用例编号"为空 → 新增
+    - 行内"用例编号"项目里查不到 → 也按新增处理（**不**复用用户指定的编号，
+      仍然用 ``_allocate_case_no`` 分配，避免占用未来连续号段）
+    - 行内"用例编号"项目里能查到 → 全字段覆盖更新（含步骤、模块归属、状态等）
+
+    模块路径：``a/b/c`` 形式；按层匹配现有模块；缺哪一层就建哪一层；多个同
+    路径冲突的（罕见）报错给用户处理。
+    """
+    try:
+        parsed_rows, parse_errors = parse_workbook(raw_xlsx)
+    except ValueError as exc:
+        raise AppException(str(exc), code="EXCEL_PARSE_ERROR", status_code=422) from exc
+
+    report = TestcaseImportReport(
+        total=len(parsed_rows),
+        errors=[
+            TestcaseImportError(row=e.row, message=e.message, title=e.title)
+            for e in parse_errors
+        ],
+    )
+
+    if not parsed_rows:
+        return report
+
+    # 预取模块树和已有用例（按 case_no 索引），避免按行 N+1 查询
+    modules_result = await db.execute(
+        select(TestcaseModule).where(TestcaseModule.project_id == project_id)
+    )
+    modules = list(modules_result.scalars().unique().all())
+    id_to_path, path_to_modules = build_module_path_index(modules)
+
+    cases_result = await db.execute(
+        select(Testcase)
+        .options(selectinload(Testcase.steps), selectinload(Testcase.module))
+        .where(Testcase.project_id == project_id)
+    )
+    existing_cases: dict[int, Testcase] = {
+        tc.case_no: tc for tc in cases_result.scalars().unique().all() if tc.case_no
+    }
+
+    # 用例编号一次性预取最大值；新增时本批次内自增不再额外查 DB
+    next_case_no = await _allocate_case_no(db, project_id)
+    created_module_paths: set[str] = set()
+
+    for row in parsed_rows:
+        try:
+            module_id, newly_created = await _resolve_or_create_module(
+                db, project_id, row, path_to_modules, id_to_path,
+                created_module_paths, report,
+            )
+        except AppException as exc:
+            report.errors.append(TestcaseImportError(
+                row=row.row_no, title=row.title, message=exc.message,
+            ))
+            continue
+
+        # 维护本批次的 newly_created 模块也加进 path 索引，让后续行能复用
+        if newly_created is not None:
+            path_tuple = tuple(split_module_path(_module_path_for_module(newly_created, id_to_path)))
+            path_to_modules.setdefault(path_tuple, []).append(newly_created)
+
+        if row.case_no and row.case_no in existing_cases:
+            tc = existing_cases[row.case_no]
+            await _apply_row_to_testcase(db, tc, row, module_id)
+            report.updated += 1
+        else:
+            tc = await _create_testcase_from_row(
+                db, project_id, row, module_id, user, allocated_case_no=next_case_no,
+            )
+            existing_cases[next_case_no] = tc
+            next_case_no += 1
+            report.created += 1
+
+    await db.flush()
+
+    return report
+
+
+async def _resolve_or_create_module(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    row: ParsedRow,
+    path_to_modules: dict[tuple[str, ...], list[TestcaseModule]],
+    id_to_path: dict[str | None, str],
+    created_module_paths: set[str],
+    report: TestcaseImportReport,
+) -> tuple[uuid.UUID | None, TestcaseModule | None]:
+    """根据 ParsedRow.module_path 解析或创建模块；返回 (module_id, 新建模块)。
+
+    多 match 时（同 path 下竟然挂了多个模块——historic data quirk）报错让用户
+    去后台合并，不擅自挑一个。
+    """
+    names = split_module_path(row.module_path)
+    if not names:
+        return None, None
+
+    # 完整路径就在树里：取唯一一个；多个就报错
+    full_tuple = tuple(names)
+    matches = path_to_modules.get(full_tuple, [])
+    if len(matches) == 1:
+        return matches[0].id, None
+    if len(matches) > 1:
+        raise AppException(
+            f"模块路径『{join_module_path(names)}』在项目内有多个同名匹配，请先合并后再导入",
+            code="MODULE_PATH_AMBIGUOUS",
+            status_code=400,
+        )
+
+    # 按层向下走，缺哪一层补哪一层
+    parent: TestcaseModule | None = None
+    parent_id: uuid.UUID | None = None
+    new_module: TestcaseModule | None = None
+    for depth in range(len(names)):
+        sub_tuple = tuple(names[: depth + 1])
+        sub_matches = [
+            m for m in path_to_modules.get(sub_tuple, [])
+            if (m.parent_id == parent_id) or (parent_id is None and m.parent_id is None)
+        ]
+        if len(sub_matches) == 1:
+            parent = sub_matches[0]
+            parent_id = parent.id
+            continue
+        if len(sub_matches) > 1:
+            raise AppException(
+                f"模块路径『{join_module_path(names[: depth + 1])}』有多个同名兄弟节点，请先合并后再导入",
+                code="MODULE_PATH_AMBIGUOUS",
+                status_code=400,
+            )
+
+        # 缺这一层 → 创建
+        new_module = TestcaseModule(
+            project_id=project_id,
+            parent_id=parent_id,
+            name=names[depth],
+            order_index=0,
+        )
+        db.add(new_module)
+        await db.flush()
+        await db.refresh(new_module)
+
+        # 维护索引：让本次导入的后续行也能命中这个新建模块
+        id_to_path[str(new_module.id)] = join_module_path(names[: depth + 1])
+        path_to_modules.setdefault(sub_tuple, []).append(new_module)
+
+        path_str = join_module_path(names[: depth + 1])
+        if path_str not in created_module_paths:
+            created_module_paths.add(path_str)
+            report.created_modules.append(path_str)
+
+        parent = new_module
+        parent_id = new_module.id
+
+    return (parent.id if parent else None), new_module
+
+
+def _module_path_for_module(
+    m: TestcaseModule,
+    id_to_path: dict[str | None, str],
+) -> str:
+    return id_to_path.get(str(m.id), m.name)
+
+
+async def _create_testcase_from_row(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    row: ParsedRow,
+    module_id: uuid.UUID | None,
+    user: User,
+    *,
+    allocated_case_no: int,
+) -> Testcase:
+    tc = Testcase(
+        project_id=project_id,
+        case_no=allocated_case_no,
+        module_id=module_id,
+        title=row.title,
+        precondition=row.precondition,
+        priority=row.priority,
+        status=row.status,
+        exec_result=row.exec_result,
+        source="manual",
+        created_by=user.id,
+        default_data_set_ids=[],
+    )
+    db.add(tc)
+    await db.flush()
+
+    for step in row.steps:
+        db.add(TestcaseStep(
+            testcase_id=tc.id,
+            step_number=step.step_number,
+            action=step.action,
+            expected_result=step.expected_result,
+        ))
+    await db.flush()
+    return tc
+
+
+async def _apply_row_to_testcase(
+    db: AsyncSession,
+    tc: Testcase,
+    row: ParsedRow,
+    module_id: uuid.UUID | None,
+) -> None:
+    """覆盖式更新：把 row 里出现的字段全都写进 tc，包括步骤替换。"""
+    tc.title = row.title
+    tc.precondition = row.precondition
+    tc.priority = row.priority
+    tc.status = row.status
+    tc.exec_result = row.exec_result
+    # 模块路径为空 = 用户在 Excel 里手动清空了 → 把用例归回"未分类"。
+    # 这是导出/导入 round-trip 的可预期行为，不要悄悄保留旧 module_id。
+    tc.module_id = module_id
+
+    for old in list(tc.steps or []):
+        await db.delete(old)
+    await db.flush()
+
+    for step in row.steps:
+        db.add(TestcaseStep(
+            testcase_id=tc.id,
+            step_number=step.step_number,
+            action=step.action,
+            expected_result=step.expected_result,
+        ))
+    await db.flush()
+
+
+__all__ = [
+    "EXCEL_IMPORT_MAX_ROWS",
+    "create_module",
+    "create_testcase",
+    "delete_module",
+    "delete_testcase",
+    "export_testcases_xlsx",
+    "get_module_tree",
+    "get_template_xlsx",
+    "get_testcase",
+    "import_testcases_xlsx",
+    "list_testcases",
+    "update_module",
+    "update_testcase",
+]

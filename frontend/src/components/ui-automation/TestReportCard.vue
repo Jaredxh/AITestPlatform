@@ -281,7 +281,9 @@ const verdict = computed<{ emoji: string; text: string }>(() => {
       text: `${d.passed_cases} 条用例通过，${d.skipped_cases} 条跳过；无失败项。`,
     };
   }
-  if (d.failed_cases <= Math.max(1, Math.floor(d.total_cases * 0.1))) {
+  // 少量失败（≤10%）。禁止使用 Math.max(1, floor(n*0.1))：n=1 时会把「全败」误
+  // 判进「整体表现良好」（floor(0.1)=0 与 max(1,*) 组合曾导致该 bug）。
+  if (d.failed_cases <= Math.floor(d.total_cases * 0.1)) {
     return {
       emoji: "⚠️",
       text: `整体表现良好：${d.passed_cases} / ${d.total_cases} 通过，${d.failed_cases} 条失败需关注。`,

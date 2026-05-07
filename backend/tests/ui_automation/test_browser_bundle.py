@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import os
 import socket
 import uuid
 from types import SimpleNamespace
@@ -145,6 +146,31 @@ async def test_open_starts_chromium_and_mcp(monkeypatch) -> None:
         assert factory_call.kwargs["cdp_endpoint"] == bundle.cdp_endpoint
     finally:
         await bundle.close()
+
+
+async def test_headed_container_sets_display_and_x11_chrome_flags(monkeypatch) -> None:
+    """容器 + 有头模式：补 DISPLAY 防误判 headless；为 Xvfb 追加 GPU/Ozone 安全参数。"""
+    monkeypatch.setattr(bb_mod, "_is_container_environment", lambda: True)
+    monkeypatch.delenv("DISPLAY", raising=False)
+    pw_handles = _patch_playwright(monkeypatch)
+    _patch_mcp_bridge(monkeypatch)
+
+    bundle = await BrowserBundle.open(
+        _make_env(),
+        uuid.uuid4(),
+        options=BundleOptions(headless=False),
+    )
+    try:
+        assert os.environ.get("DISPLAY") == ":99"
+        kwargs = pw_handles["chromium"].launch_persistent_context.await_args.kwargs
+        assert kwargs["headless"] is False
+        args = kwargs.get("args", [])
+        assert "--ozone-platform=x11" in args
+        assert "--disable-gpu" in args
+        assert "--disable-gpu-compositing" in args
+    finally:
+        await bundle.close()
+        monkeypatch.delenv("DISPLAY", raising=False)
 
 
 async def test_open_passes_record_options(monkeypatch) -> None:

@@ -34,6 +34,13 @@
 #   curl --proxy http://localhost:8118 https://auth-dashboard.keyuanjiankang.com/login
 # 应该直接回 200。
 #
+# ── 技能包 HTTP（http_get_json / http_post_json）───────────────────────
+# 与上同理：宿主机 curl 能访问的公司网段，容器内直连仍可能超时。
+# backend 会依次读取 ``SKILL_HTTP_PROXY``、``UI_HTTP_LOGIN_PROXY``、环境变量
+# ``HTTP_PROXY`` 作为技能包请求的 **唯一** HTTP 代理。本 compose 已把
+# ``HTTP_PROXY`` / ``UI_HTTP_LOGIN_PROXY`` 指到 ``host.docker.internal:8118``，
+# 技能包调 ``http://172.17.x.x:5004/...`` 时会自动经该代理出口，无需改 SKILL.md。
+#
 # ── 用法 ──────────────────────────────────────────────────────────────
 #   # 启动（带 VPN proxy）
 #   docker compose -f docker-compose.yml -f docker-compose.vpn.yml up -d backend
@@ -57,6 +64,12 @@ services:
       # 现象就是：浏览器侧（UI_BROWSER_PROXY）能通；前置 http_login 仍然
       # ``ConnectTimeout``。
       UI_HTTP_LOGIN_PROXY: ${UI_HTTP_LOGIN_PROXY:-http://host.docker.internal:8118}
+      # ── 三期 Skill 包 HTTP 工具专用代理（http_get_json / http_post_json）──
+      # 与上同理：``trust_env=False`` 不读宿主代理，必须显式给。留空时会
+      # 自动回退到 ``UI_HTTP_LOGIN_PROXY`` / ``HTTP_PROXY``，所以两类工具
+      # 在 VPN 场景下默认就是"用同一个本机代理出口"，无需在每个 SKILL.md
+      # 里改 URL。要让二者走不同代理时再单独覆盖这一条。
+      SKILL_HTTP_PROXY: ${SKILL_HTTP_PROXY:-http://host.docker.internal:8118}
       # ── 浏览器出口代理（chromium 启动时透传给 ``--proxy-server``）────
       # ``host.docker.internal`` 是 Docker Desktop 内置的宿主机别名，
       # 自动映射到宿主机网卡 IP（不需要在 host 里改 /etc/hosts）。

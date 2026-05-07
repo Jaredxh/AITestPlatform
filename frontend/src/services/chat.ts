@@ -9,6 +9,8 @@ export interface ChatMessage {
   tokens_used: number | null;
   model_used: string | null;
   meta_data: Record<string, unknown> | null;
+  /** Phase 12 / Task 12.6 — 该消息触发的 skill 调用日志 id（前端徽章定位用）。 */
+  skill_invocation_id?: string | null;
   created_at: string;
 }
 

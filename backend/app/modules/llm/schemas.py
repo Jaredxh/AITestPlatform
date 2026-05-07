@@ -84,6 +84,8 @@ class ChatMessageResponse(BaseModel):
     tokens_used: int | None
     model_used: str | None
     meta_data: dict | None = None
+    #: Phase 12 / Task 12.6 — 该消息触发的 skill 调用日志 id（前端 SkillUsageBadge 用）
+    skill_invocation_id: uuid.UUID | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

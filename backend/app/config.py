@@ -95,6 +95,11 @@ class Settings(BaseSettings):
     # 例：``http://host.docker.internal:8118``。空串 / None = 不启用旁路。
     UI_HTTP_LOGIN_PROXY: str | None = None
 
+    # 技能包 ``http_get_json`` / ``http_post_json`` 出口代理（可选）。
+    # Docker Desktop + macOS VPN 下容器直连打不通公司网段时，应与本机代理一致。
+    # 空：依次回退 ``UI_HTTP_LOGIN_PROXY`` → 环境变量 ``HTTP_PROXY`` / ``http_proxy``。
+    SKILL_HTTP_PROXY: str | None = None
+
     @property
     def DATABASE_URL(self) -> str:
         return (

@@ -19,6 +19,12 @@ from app.modules.prompts.models import PromptTemplate, PromptVersion  # noqa: F4
 from app.modules.testcases.models import TestcaseModule, Testcase, TestcaseStep, AIGenerationBatch  # noqa: F401
 from app.modules.ui_automation.models import TestEnvironment, PreconditionTemplate  # noqa: F401
 from app.modules.test_data.models import TestDataSet, TestDataItem  # noqa: F401
+from app.modules.skills.models import (  # noqa: F401
+    Skill,
+    SkillSafetyScan,
+    SkillUsageLog,
+    SkillVersion,
+)
 
 target_metadata = Base.metadata
 

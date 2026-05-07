@@ -49,14 +49,15 @@
         />
       </div>
       <div class="testcase-table-toolbar__right">
-        <n-button
-          quaternary
-          :disabled="!projectStore.currentProjectId"
-          @click="goExecutionHistory"
-        >
-          <template #icon><span class="i-carbon-recording" /></template>
-          执行历史
-        </n-button>
+        <!--
+          按钮编排原则：
+          - AI 生成 = 主行动（primary 实心），放第一位形成视觉锚点；
+          - 其余三个（新建用例 / 导入导出 / 执行历史）= 同级次行动，用同一套
+            默认描边样式（``<n-button>`` 无 prop），以避免"每个按钮长得都不一样"
+            的杂乱感；
+          - 顺序按"创建 → 批量管理 → 历史回看"的工作流自左向右排：
+            AI 生成 · 新建用例 · 导入 / 导出 · 执行历史
+        -->
         <n-button type="primary" @click="$emit('generate')">
           <template #icon><span class="i-carbon-magic-wand" /></template>
           AI 生成
@@ -65,8 +66,32 @@
           <template #icon><span class="i-carbon-add" /></template>
           新建用例
         </n-button>
+        <n-dropdown
+          trigger="click"
+          :options="ioMenuOptions"
+          @select="handleIoMenuSelect"
+        >
+          <n-button :disabled="!projectStore.currentProjectId">
+            <template #icon><span class="i-carbon-data-table-reference" /></template>
+            导入 / 导出
+          </n-button>
+        </n-dropdown>
+        <n-button
+          :disabled="!projectStore.currentProjectId"
+          @click="goExecutionHistory"
+        >
+          <template #icon><span class="i-carbon-recording" /></template>
+          执行历史
+        </n-button>
       </div>
     </div>
+
+    <import-dialog
+      v-model:show="showImportDialog"
+      :project-id="projectStore.currentProjectId"
+      @download-template="handleDownloadTemplate"
+      @imported="handleImported"
+    />
 
     <transition name="fade-slide">
       <div v-if="checkedRowKeys.length > 0" class="testcase-batch-bar">
@@ -172,6 +197,7 @@ import { useRouter } from "vue-router";
 import {
   NButton,
   NDataTable,
+  NDropdown,
   NInput,
   NPagination,
   NPopconfirm,
@@ -182,14 +208,21 @@ import {
   NText,
   useMessage,
 } from "naive-ui";
-import type { DataTableColumns } from "naive-ui";
+import type { DataTableColumns, DropdownOption } from "naive-ui";
 import AppEmpty from "@/components/common/AppEmpty.vue";
+import ImportDialog from "@/components/testcases/ImportDialog.vue";
 import {
   listTestcasesApi,
   deleteTestcaseApi,
+  downloadTestcaseTemplateApi,
+  exportTestcasesApi,
   updateTestcaseApi,
 } from "@/services/testcases";
-import type { TestcaseListItem, ExecResult } from "@/services/testcases";
+import type {
+  ExecResult,
+  TestcaseImportReport,
+  TestcaseListItem,
+} from "@/services/testcases";
 import { useProjectStore } from "@/stores/project";
 import { useAuthStore } from "@/stores/auth";
 
@@ -631,6 +664,108 @@ function resetFilters() {
   filterExecResult.value = null;
   currentPage.value = 1;
   fetchTestcases();
+}
+
+// ── 导入 / 导出 / 模板 ─────────────────────────────────────────────
+//
+// 三个动作收进同一个下拉，避免顶栏在多按钮 + 长筛选条件时被挤出第二行；
+// 业务逻辑都在这里就近写，让 ImportDialog 自身保持"通用"形态（不依赖
+// 任何全局 store）。
+
+const showImportDialog = ref(false);
+const ioBusy = ref(false);
+
+const ioMenuOptions = computed<DropdownOption[]>(() => [
+  {
+    label: "下载导入模板",
+    key: "template",
+    icon: () => h("span", { class: "i-carbon-document-blank" }),
+  },
+  {
+    label: "导出当前列表",
+    key: "export",
+    icon: () => h("span", { class: "i-carbon-export" }),
+  },
+  { type: "divider", key: "d1" },
+  {
+    label: "导入 Excel...",
+    key: "import",
+    icon: () => h("span", { class: "i-carbon-upload" }),
+  },
+]);
+
+async function handleIoMenuSelect(key: string) {
+  if (key === "template") {
+    await handleDownloadTemplate();
+    return;
+  }
+  if (key === "export") {
+    await handleExport();
+    return;
+  }
+  if (key === "import") {
+    if (!projectStore.currentProjectId) {
+      message.warning("请先在顶栏选择一个项目");
+      return;
+    }
+    showImportDialog.value = true;
+  }
+}
+
+async function handleDownloadTemplate() {
+  if (!projectStore.currentProjectId) {
+    message.warning("请先在顶栏选择一个项目");
+    return;
+  }
+  if (ioBusy.value) return;
+  ioBusy.value = true;
+  try {
+    const r = await downloadTestcaseTemplateApi(projectStore.currentProjectId);
+    message.success(`已下载模板：${r.filename}`);
+  } catch (exc) {
+    const msg = exc instanceof Error ? exc.message : "模板下载失败";
+    message.error(msg);
+  } finally {
+    ioBusy.value = false;
+  }
+}
+
+async function handleExport() {
+  if (!projectStore.currentProjectId) {
+    message.warning("请先在顶栏选择一个项目");
+    return;
+  }
+  if (total.value === 0) {
+    message.info("当前筛选下没有用例可导出");
+    return;
+  }
+  if (ioBusy.value) return;
+  ioBusy.value = true;
+  try {
+    const r = await exportTestcasesApi(projectStore.currentProjectId, {
+      module_id: props.moduleId || undefined,
+      priority: filterPriority.value || undefined,
+      status: filterStatus.value || undefined,
+      source: filterSource.value || undefined,
+      exec_result: filterExecResult.value || undefined,
+      search: searchText.value || undefined,
+    });
+    message.success(`已导出 ${total.value} 条用例：${r.filename}`);
+  } catch (exc) {
+    const msg = exc instanceof Error ? exc.message : "导出失败";
+    message.error(msg);
+  } finally {
+    ioBusy.value = false;
+  }
+}
+
+function handleImported(report: TestcaseImportReport) {
+  // 即便有部分错误，只要有 created/updated 就刷一下列表 + 通知父组件
+  // 同步左侧模块树（导入可能新建了模块）
+  if (report.created > 0 || report.updated > 0 || report.created_modules.length > 0) {
+    fetchTestcases();
+    emit("mutated");
+  }
 }
 
 watch(

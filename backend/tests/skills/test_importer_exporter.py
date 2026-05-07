@@ -1,0 +1,107 @@
+"""Task 12.3 — ZIP unpack / 体积约束。"""
+
+from __future__ import annotations
+
+import io
+import zipfile
+
+import pytest
+
+from app.modules.skills.importer import (
+    MAX_ATTACH_FILE_BYTES,
+    MAX_ATTACHMENTS,
+    ZIP_MAX_BYTES,
+    unpack_skill_zip,
+)
+from app.modules.skills.parser import SkillParseError
+
+
+def _zip_bytes(entries: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, data in entries.items():
+            zf.writestr(name, data)
+    return buf.getvalue()
+
+
+def test_unpack_nested_skill_md_and_attachment() -> None:
+    md = b"""---
+name: Zip Skill
+description: From zip
+slug: zip-skill
+version: 1.0.0
+category: custom
+tags: []
+triggers: []
+tools_required: []
+activation_mode: agent_callable
+---
+
+# Z
+
+Hello.
+"""
+    raw = _zip_bytes(
+        {
+            "my-pack/SKILL.md": md,
+            "my-pack/sub/note.txt": b"note",
+        },
+    )
+    parsed, attachments = unpack_skill_zip(raw)
+    assert parsed.slug == "zip-skill"
+    assert len(attachments) == 1
+    assert attachments[0][0].replace("\\", "/") == "sub/note.txt"
+
+
+def test_rejects_oversized_zip() -> None:
+    huge = b"x" * (ZIP_MAX_BYTES + 1)
+    with pytest.raises(SkillParseError, match="exceeds"):
+        unpack_skill_zip(huge)
+
+
+def test_rejects_large_attachment() -> None:
+    md = b"""---
+name: Big
+description: d
+slug: big-skill
+version: 1.0.0
+category: custom
+tags: []
+triggers: []
+tools_required: []
+activation_mode: agent_callable
+---
+
+# B
+"""
+    big = _zip_bytes(
+        {
+            "SKILL.md": md,
+            "big.bin": b"x" * (MAX_ATTACH_FILE_BYTES + 1),
+        },
+    )
+    with pytest.raises(SkillParseError, match="exceeds"):
+        unpack_skill_zip(big)
+
+
+def test_rejects_too_many_attachments() -> None:
+    md = b"""---
+name: Many
+description: d
+slug: many-skill
+version: 1.0.0
+category: custom
+tags: []
+triggers: []
+tools_required: []
+activation_mode: agent_callable
+---
+
+# M
+"""
+    entries = {"SKILL.md": md}
+    for i in range(MAX_ATTACHMENTS + 1):
+        entries[f"f{i}.txt"] = b"a"
+    raw = _zip_bytes(entries)
+    with pytest.raises(SkillParseError, match="more than"):
+        unpack_skill_zip(raw)

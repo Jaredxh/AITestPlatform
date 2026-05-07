@@ -1,10 +1,10 @@
+import asyncio
 import json
 import logging
 import uuid
-import asyncio
 from collections.abc import AsyncGenerator
 
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -12,6 +12,7 @@ from app.core.crypto import decrypt
 from app.core.exceptions import NotFoundException, PermissionDeniedException
 from app.database import async_session_factory
 from app.modules.auth.models import User
+from app.modules.llm.agent_tools import TOOLS, build_agent_system_guidance
 from app.modules.llm.intent_handler import (
     DetectedIntent,
     IntentType,
@@ -21,7 +22,6 @@ from app.modules.llm.intent_handler import (
     format_review_result,
     resolve_document,
 )
-from app.modules.llm.agent_tools import TOOLS, build_agent_system_guidance, run_tool
 from app.modules.llm.models import ChatMessage, ChatSession, LLMConfig
 from app.modules.llm.providers import stream_chat
 from app.modules.llm.schemas import (
@@ -31,6 +31,10 @@ from app.modules.llm.schemas import (
     ChatSessionResponse,
     ChatSessionUpdateRequest,
 )
+from app.modules.skills.models import SkillUsageLog
+from app.modules.skills.platform_chat_tools import chat_platform_runtime_cm
+from app.modules.skills.safe_invoke import safe_run_tool
+from app.modules.skills.skill_router import SkillContext, compose
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +77,25 @@ def _sse_error(message: str) -> str:
 
 def _sse_action(content: str, meta: dict | None = None) -> str:
     return _sse({"type": "action", "content": content, "meta": meta or {}})
+
+
+def _sse_usage(total_tokens: int) -> str:
+    """LLM 流末尾累计 ``total_tokens`` 的内部事件。
+
+    历史 bug：``skip_persistence=True`` 下 _handle_chat_stream 算出 usage_total
+    后只走"自己写库"分支用过，编排器（``_run_chat_task``）根本拿不到
+    tokens 数；assistant ChatMessage.tokens_used 与 SkillUsageLog.tokens_consumed
+    全是 NULL；前端"使用统计"页 avg_tokens 永远是 ``—``。
+    现在在流末尾显式 emit ``type=usage``，让 orchestrator 写到 state
+    （并由 persist() 反查回填 SkillUsageLog.tokens_consumed）。前端不展示
+    该事件，因此不会出现在用户视野里。
+    """
+    return _sse({"type": "usage", "total_tokens": int(total_tokens)})
+
+
+def _sse_skill_activated(payload: dict) -> str:
+    """Phase 12 / Task 12.6 — 通知前端 SkillActivationHint banner。"""
+    return _sse({"type": "skill_activated", **payload})
 
 
 # ─────────────── Chat stream hub (background-task architecture) ───────────────
@@ -196,6 +219,7 @@ def _to_message_response(msg: ChatMessage) -> ChatMessageResponse:
         tokens_used=msg.tokens_used,
         model_used=msg.model_used,
         meta_data=msg.meta_data,
+        skill_invocation_id=msg.skill_invocation_id,
         created_at=msg.created_at,
     )
 
@@ -384,6 +408,18 @@ async def _run_chat_task(
                     msg.model_used = state["model_used"]
                 if state["tokens_used"]:
                     msg.tokens_used = state["tokens_used"]
+                    # 回填到本次对话激活的 SkillUsageLog —— 历史链路这里全是
+                    # NULL，导致"使用统计"页 avg_tokens 总是 ``—``。我们把
+                    # 这一轮 chat 的累计 total_tokens 归到该 message 关联的
+                    # 单条 SkillUsageLog（``execute_skill_invoke`` 已写
+                    # message.skill_invocation_id）；这并不是"该 skill 单独
+                    # 消耗"的精确值，但它是"用了该 skill 的整轮对话总开销"，
+                    # 恰好是评估 skill 性价比 / 成本敏感度的可比指标。
+                    skill_log_id = getattr(msg, "skill_invocation_id", None)
+                    if skill_log_id is not None:
+                        log = await save_db.get(SkillUsageLog, skill_log_id)
+                        if log is not None:
+                            log.tokens_consumed = state["tokens_used"]
                 await save_db.commit()
         except Exception:  # noqa: BLE001
             logger.exception(
@@ -402,6 +438,7 @@ async def _run_chat_task(
                 user_content,
                 user,
                 llm_config_id_override,
+                assistant_message_id=assistant_msg_id,
                 skip_persistence=True,
             ):
                 event = _parse_sse_chunk(sse_chunk)
@@ -433,6 +470,12 @@ async def _run_chat_task(
                     state["meta"]["status"] = "failed"
                     if not state["content"]:
                         state["content"] = f"❌ {event.get('message', '生成失败')}"
+                elif etype == "usage":
+                    # _handle_chat_stream 在 done 之前发的累计 token 数；只有
+                    # 这条事件能让 orchestrator 在不写库的流式期间拿到 tokens。
+                    tt = event.get("total_tokens")
+                    if isinstance(tt, int) and tt > 0:
+                        state["tokens_used"] = tt
                 # done 事件由 finally 统一处理
 
         # 正常收尾：如果既没 error 也没 action 明确设置过状态，标记为完成。
@@ -441,7 +484,36 @@ async def _run_chat_task(
         if not state["content"]:
             state["content"] = "（模型未输出任何内容，请稍后重试）"
             state["meta"].setdefault("status", "failed")
-    except (asyncio.CancelledError, Exception) as exc:  # noqa: BLE001
+    except asyncio.CancelledError:
+        # 与订阅端断开、服务 reload 等场景下的 asyncio 取消；避免打印整段 traceback，
+        # 且给用户可读说明（而不是裸露的 CancelledError 字符串）。
+        logger.warning(
+            "Background chat task cancelled for message %s (partial len=%s)",
+            assistant_msg_id,
+            len(state.get("content") or ""),
+        )
+        state["meta"]["status"] = "interrupted"
+        if not (state.get("content") or "").strip():
+            state["content"] = (
+                "（生成被中断。若您未点击「停止」，常见原因包括：页面刷新/关闭标签页、"
+                "代理或网关断开长连接、或服务正在重启。请重试；"
+                "生成过程中请尽量避免快速切换页面或反复切换模型。）"
+            )
+        try:
+            await stream.append(
+                "error",
+                {"message": "生成任务已中断，请重试。"},
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        await persist()
+        try:
+            await stream.append("done", {"assistant_message_id": str(assistant_msg_id)})
+        except Exception:  # noqa: BLE001
+            pass
+        await stream.mark_done()
+        raise
+    except Exception as exc:  # noqa: BLE001
         logger.exception(
             "Background chat task failed for message %s", assistant_msg_id
         )
@@ -452,15 +524,6 @@ async def _run_chat_task(
             await stream.append("error", {"message": str(exc)})
         except Exception:  # noqa: BLE001
             pass
-        if isinstance(exc, asyncio.CancelledError):
-            # 任务被取消：仍然保证落盘 + 通知 subscriber。
-            await persist()
-            try:
-                await stream.append("done", {"assistant_message_id": str(assistant_msg_id)})
-            except Exception:  # noqa: BLE001
-                pass
-            await stream.mark_done()
-            raise
     finally:
         await persist()
         try:
@@ -526,6 +589,7 @@ async def send_message_stream(
     llm_config_id_override: uuid.UUID | None = None,
     *,
     web_search: bool = True,  # kept for backward compat, agent now always has tool access
+    assistant_message_id: uuid.UUID | None = None,
     skip_persistence: bool = False,
 ) -> AsyncGenerator[str, None]:
     """发送用户消息并流式返回 AI 响应（SSE 格式 data: ...）。
@@ -553,15 +617,36 @@ async def send_message_stream(
     config = await _get_config_or_404(db, config_id)
     api_key = decrypt(config.api_key_encrypted) if config.api_key_encrypted else None
 
-    if llm_config_id_override and llm_config_id_override != session.llm_config_id:
+    # 根因修复（行锁卡死）：在进入 LLM 长流之前必须**清空主 db 上一切待写改动**
+    # 并 commit。
+    #
+    # 历史故障：``session.llm_config_id = override`` 在后续任何一次 SELECT 触发
+    # 隐式 flush 时会发出 ``UPDATE chat_sessions``，事务从此一直挂着；流式
+    # 期间持续 6+ 分钟没有 commit，行锁不释放。后台 ``persist()`` 想 UPDATE
+    # 同一会话的 ``chat_messages`` 时撞行锁 → ``wait_event=Lock/transactionid``
+    # 死等到 PG idle-in-tx timeout，整个 chat 看起来就像后端整个挂掉。
+    #
+    # 修复策略：把所有"会话级元数据"的写入都提前 commit，让流式期间 ``db``
+    # 只用于读（compose / get session 缓存等），不再持有任何 dirty 状态。
+    config_changed = (
+        llm_config_id_override is not None
+        and llm_config_id_override != session.llm_config_id
+    )
+    if config_changed:
         session.llm_config_id = llm_config_id_override
 
     if not skip_persistence:
         user_msg = ChatMessage(session_id=session.id, role="user", content=user_content)
         db.add(user_msg)
         await db.flush()
-        # Commit immediately so the user's message survives even if the SSE stream is
-        # cancelled by a page refresh/navigation before the assistant finishes.
+
+    # 无论是否 skip_persistence，都要在 LLM 流之前 commit 一次：
+    # - skip_persistence=True 的后台任务模式下，user_msg 已在 ``start_chat_task``
+    #   持久化；这里 commit 主要是把 ``session.llm_config_id`` 的 UPDATE 落地、
+    #   让事务收尾、行锁释放；
+    # - skip_persistence=False 的同步直流模式下，commit 同时让用户消息也持久化，
+    #   避免 SSE 被刷新打断时丢失提问。
+    if config_changed or not skip_persistence:
         await db.commit()
 
     intent = detect_intent(user_content)
@@ -583,13 +668,21 @@ async def send_message_stream(
         return
 
     async for chunk in _handle_chat_stream(
-        db, session, user_content, config, api_key,
+        db,
+        session,
+        user_content,
+        user,
+        config,
+        api_key,
+        assistant_message_id=assistant_message_id,
         skip_persistence=skip_persistence,
     ):
         yield chunk
 
 
-MAX_TOOL_ITERATIONS = 3
+# OpenClaw / 技能包常见路径：skill_*__invoke → http_get/post_json（可多轮）→ 可能需要
+# web_search 辅助 → 最终作答。3 轮在真实场景中极易触顶导致「卡住感」或空答复。
+MAX_TOOL_ITERATIONS = 8
 
 
 async def _handle_review_intent(
@@ -756,13 +849,33 @@ async def _handle_generate_intent(
     yield _sse_done()
 
 
+def merge_skill_context_into_openai_messages(
+    openai_messages: list[dict],
+    skill_ctx: SkillContext,
+) -> list[dict]:
+    """把 SkillRouter 的 system_messages 插在所有前置 system 块之后、history 之前。"""
+    if not skill_ctx.system_messages:
+        return openai_messages
+    i = 0
+    while i < len(openai_messages) and openai_messages[i].get("role") == "system":
+        i += 1
+    return openai_messages[:i] + skill_ctx.system_messages + openai_messages[i:]
+
+
+def tools_for_chat_session(skill_ctx: SkillContext) -> list[dict]:
+    """空 SkillContext 时必须返回 ``TOOLS`` 原对象引用（零侵入契约）。"""
+    return TOOLS if not skill_ctx.candidate_tools else TOOLS + skill_ctx.candidate_tools
+
+
 async def _handle_chat_stream(
     db: AsyncSession,
     session: ChatSession,
     user_content: str,
+    user: User,
     config: LLMConfig,
     api_key: str | None,
     *,
+    assistant_message_id: uuid.UUID | None = None,
     skip_persistence: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Agent 对话流：OpenAI tool-calling 循环。
@@ -773,7 +886,25 @@ async def _handle_chat_stream(
          再次调用模型；最多迭代 ``MAX_TOOL_ITERATIONS`` 次；
       3. 期间的 delta/reasoning 原样透传前端；工具调用以 info 事件显式告知。
     """
-    openai_messages = _build_context(session, user_content)
+    skill_ctx = await compose(db, session.project_id, session, user_content)
+    openai_messages = merge_skill_context_into_openai_messages(
+        _build_context(session, user_content),
+        skill_ctx,
+    )
+    tools_for_chat = tools_for_chat_session(skill_ctx)
+
+    # Task 12.6：在 LLM 第一轮请求前把 always / manual / trigger 命中的 skill
+    # 推给前端，让 SkillActivationHint banner 立即显示"已自动激活"。
+    # agent_callable 候选不在此处推——它要等模型真的调用 skill_*__invoke 时
+    # 才"真正激活"，那时由 ChatMessage.skill_invocation_id 体现到消息徽章上。
+    for info in skill_ctx.activated_skills:
+        yield _sse_skill_activated({
+            "skill_id": str(info.skill_id),
+            "slug": info.slug,
+            "name": info.name,
+            "activation_reason": info.activation_reason,
+            "matched_trigger": info.matched_trigger,
+        })
 
     full_content = ""
     full_reasoning = ""
@@ -781,193 +912,225 @@ async def _handle_chat_stream(
     model_used = config.model
     usage_total = None
     try:
-        for iteration in range(MAX_TOOL_ITERATIONS):
-            round_content = ""
-            round_reasoning = ""
-            pending_tool_calls: dict[int, dict] = {}
-            finish_reason: str | None = None
-            last_chunk = None
+        async with chat_platform_runtime_cm(
+            db,
+            user,
+            session.project_id,
+            session.llm_config_id,
+            assistant_message_id,
+        ):
+            for iteration in range(MAX_TOOL_ITERATIONS):
+                round_content = ""
+                round_reasoning = ""
+                pending_tool_calls: dict[int, dict] = {}
+                finish_reason: str | None = None
+                last_chunk = None
 
-            # On the final iteration, force the model to produce a text answer
-            # rather than another tool call. We keep ``tools=`` declared so the
-            # assistant→tool message history in the prompt remains valid, but
-            # set ``tool_choice="none"`` — OpenAI-canonical way of saying
-            # "no more tool calls, finalize your answer now".
-            is_last = iteration == MAX_TOOL_ITERATIONS - 1
-            tool_choice: str | None = None
-            if is_last and iteration > 0:
-                tool_choice = "none"
-                openai_messages.append({
-                    "role": "user",
-                    "content": (
-                        "请立即基于上面 tool 返回的内容，用中文 Markdown 直接回答我的问题。"
-                        "即使信息不完整，也必须把已知关键数据（如温度/体感/天气状况/湿度、"
-                        "汇率数值、新闻标题等）一并列出来，并说明缺少哪些部分。不要再调用工具。"
-                    ),
-                })
+                # On the final iteration, force the model to produce a text answer
+                # rather than another tool call. We keep ``tools=`` declared so the
+                # assistant→tool message history in the prompt remains valid, but
+                # set ``tool_choice="none"`` — OpenAI-canonical way of saying
+                # "no more tool calls, finalize your answer now".
+                is_last = iteration == MAX_TOOL_ITERATIONS - 1
+                tool_choice: str | None = None
+                if is_last and iteration > 0:
+                    tool_choice = "none"
+                    openai_messages.append({
+                        "role": "user",
+                        "content": (
+                            "请立即基于上面 tool 返回的内容，用中文 Markdown 直接回答我的问题。"
+                            "若刚调用过 skill_*__invoke 且文档要求请求 HTTP 接口，你必须已经用 "
+                            "http_get_json 或 http_post_json 拿到真实响应再整理；"
+                            "禁止仅根据 SKILL 文档文字臆造「查询结果」。\n"
+                            "即使信息不完整，也必须列出已知关键数据，并说明缺少哪些部分。"
+                            "不要再调用任何工具。"
+                        ),
+                    })
 
-            async for chunk in stream_chat(
-                provider=config.provider,
-                model=config.model,
-                messages=openai_messages,
-                api_key=api_key,
-                base_url=config.base_url,
-                temperature=config.temperature,
-                max_tokens=config.max_tokens,
-                tools=TOOLS,
-                tool_choice=tool_choice,
-            ):
-                last_chunk = chunk
-                if chunk.model:
-                    model_used = chunk.model
-                if not chunk.choices:
-                    continue
+                async for chunk in stream_chat(
+                    provider=config.provider,
+                    model=config.model,
+                    messages=openai_messages,
+                    api_key=api_key,
+                    base_url=config.base_url,
+                    temperature=config.temperature,
+                    max_tokens=config.max_tokens,
+                    tools=tools_for_chat,
+                    tool_choice=tool_choice,
+                ):
+                    last_chunk = chunk
+                    if chunk.model:
+                        model_used = chunk.model
+                    if not chunk.choices:
+                        continue
 
-                choice = chunk.choices[0]
-                delta = choice.delta
+                    choice = chunk.choices[0]
+                    delta = choice.delta
 
-                reasoning_piece = getattr(delta, "reasoning_content", None)
-                if reasoning_piece:
-                    round_reasoning += reasoning_piece
-                    yield _sse_reasoning(reasoning_piece)
+                    reasoning_piece = getattr(delta, "reasoning_content", None)
+                    if reasoning_piece:
+                        round_reasoning += reasoning_piece
+                        yield _sse_reasoning(reasoning_piece)
 
-                content_piece = getattr(delta, "content", None)
-                if content_piece:
-                    round_content += content_piece
-                    yield _sse_delta(content_piece)
+                    content_piece = getattr(delta, "content", None)
+                    if content_piece:
+                        round_content += content_piece
+                        yield _sse_delta(content_piece)
 
-                for tc in (delta.tool_calls or []):
-                    slot = pending_tool_calls.setdefault(
-                        tc.index,
-                        {"id": None, "name": "", "arguments": ""},
-                    )
-                    if getattr(tc, "id", None):
-                        slot["id"] = tc.id
-                    fn = getattr(tc, "function", None)
-                    if fn is not None:
-                        if getattr(fn, "name", None):
-                            slot["name"] = fn.name
-                        if getattr(fn, "arguments", None):
-                            slot["arguments"] += fn.arguments
-
-                if choice.finish_reason:
-                    finish_reason = choice.finish_reason
-
-            full_content += round_content
-            full_reasoning += round_reasoning
-            if last_chunk is not None and getattr(last_chunk, "usage", None):
-                usage_total = getattr(last_chunk.usage, "total_tokens", None)
-
-            # If this is the forced-answer round, never execute another tool
-            # call even if the model tried to emit one — the gateway may not
-            # honor ``tool_choice=none``, so we enforce it client-side. We do
-            # NOT promote reasoning to content here; reasoning is private
-            # chain-of-thought, not the final answer. The outer post-loop
-            # fallback writes a clean "no answer" banner instead.
-            if is_last:
-                break
-
-            if finish_reason != "tool_calls" or not pending_tool_calls:
-                break
-
-            # Append assistant message with tool_calls to the history so the
-            # tool results below can reference them (OpenAI protocol requirement).
-            tc_list = []
-            for idx in sorted(pending_tool_calls.keys()):
-                item = pending_tool_calls[idx]
-                tc_list.append({
-                    "id": item["id"] or f"call_{iteration}_{idx}",
-                    "type": "function",
-                    "function": {
-                        "name": item["name"],
-                        "arguments": item["arguments"] or "{}",
-                    },
-                })
-            assistant_turn: dict = {
-                "role": "assistant",
-                "content": round_content or None,
-                "tool_calls": tc_list,
-            }
-            # 思维链回填：火山方舟 / 智谱 GLM 的 thinking 模式契约要求
-            # 上一轮的 ``reasoning_content`` 必须随下一轮 assistant message 一并回传
-            # （否则 400 ``The reasoning_content in the thinking mode must be passed
-            # back to the API``）。OpenAI 等标准接口会忽略未识别字段，无害。
-            if round_reasoning:
-                assistant_turn["reasoning_content"] = round_reasoning
-            openai_messages.append(assistant_turn)
-
-            for tc in tc_list:
-                name = tc["function"]["name"]
-                args_raw = tc["function"]["arguments"]
-                args_preview = ""
-                sources_preview = ""
-                try:
-                    parsed_args = json.loads(args_raw) if args_raw else {}
-                    if isinstance(parsed_args, dict):
-                        args_preview = str(parsed_args.get("query") or "")
-                        srcs = parsed_args.get("sources")
-                        if isinstance(srcs, list) and srcs:
-                            sources_preview = "，源：" + "/".join(str(s) for s in srcs[:5])
-                except Exception:  # noqa: BLE001
-                    args_preview = args_raw[:80]
-                yield _sse_info(f"🔎 {name}：{args_preview}{sources_preview}")
-                result_json = await run_tool(name, args_raw)
-                # 如果 tool 返回里带 sources_used，顺手 emit 给前端看实际命中哪几家
-                try:
-                    payload = json.loads(result_json)
-                    used = payload.get("sources_used") if isinstance(payload, dict) else None
-                    if isinstance(used, list) and used:
-                        yield _sse_info(
-                            "✓ 命中来源：" + "、".join(str(x) for x in used[:8])
+                    for tc in (delta.tool_calls or []):
+                        slot = pending_tool_calls.setdefault(
+                            tc.index,
+                            {"id": None, "name": "", "arguments": ""},
                         )
-                except Exception:  # noqa: BLE001
-                    pass
-                openai_messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": result_json,
-                })
-                tool_trace.append({"name": name, "arguments": args_raw, "result": result_json[:4000]})
-            yield _sse_info("整合工具结果中…")
-            # Continue loop: model will now see tool outputs and keep responding.
+                        if getattr(tc, "id", None):
+                            slot["id"] = tc.id
+                        fn = getattr(tc, "function", None)
+                        if fn is not None:
+                            if getattr(fn, "name", None):
+                                slot["name"] = fn.name
+                            if getattr(fn, "arguments", None):
+                                slot["arguments"] += fn.arguments
 
-        if not full_content:
-            # Model didn't commit to an answer (only reasoning, or totally empty).
-            # Never auto-promote reasoning to content — that's how users end up
-            # seeing raw thinking tokens as if they were the final reply. Emit a
-            # clean fallback message instead; reasoning is still persisted in
-            # meta_data (below) for debugging.
-            fallback = (
-                "（模型未能在本轮给出直接答案。可能是工具结果不足或模型仍在思考，"
-                "请稍等几秒后重新提问，或换一个更具体的提问方式。）"
-            )
-            full_content = fallback
-            yield _sse_delta(fallback)
+                    if choice.finish_reason:
+                        finish_reason = choice.finish_reason
 
-        meta: dict | None = None
-        if full_reasoning or tool_trace:
-            meta = {}
-            if full_reasoning:
-                meta["reasoning"] = full_reasoning
-            if tool_trace:
-                meta["tools"] = tool_trace
+                full_content += round_content
+                full_reasoning += round_reasoning
+                # 多轮工具调用每轮都会拿到自己这一轮的 total_tokens；要做"本次
+                # 对话总开销"必须累加，而不是覆盖（覆盖只会留下最后一轮，前几轮
+                # 的工具回灌成本被吃掉）。
+                if last_chunk is not None and getattr(last_chunk, "usage", None):
+                    round_usage = getattr(last_chunk.usage, "total_tokens", None)
+                    if isinstance(round_usage, int) and round_usage > 0:
+                        usage_total = (usage_total or 0) + round_usage
 
-        if not skip_persistence:
-            assistant_msg = ChatMessage(
-                session_id=session.id,
-                role="assistant",
-                content=full_content,
-                model_used=model_used,
-                tokens_used=usage_total,
-                meta_data=meta,
-            )
-            db.add(assistant_msg)
+                # If this is the forced-answer round, never execute another tool
+                # call even if the model tried to emit one — the gateway may not
+                # honor ``tool_choice=none``, so we enforce it client-side. We do
+                # NOT promote reasoning to content here; reasoning is private
+                # chain-of-thought, not the final answer. The outer post-loop
+                # fallback writes a clean "no answer" banner instead.
+                if is_last:
+                    break
 
-            if session.title == "新对话" and len(session.messages) <= 1:
-                session.title = (user_content[:50] or "新对话").strip() or "新对话"
+                if finish_reason != "tool_calls" or not pending_tool_calls:
+                    break
 
-            await db.flush()
-        yield _sse_done()
+                # Append assistant message with tool_calls to the history so the
+                # tool results below can reference them (OpenAI protocol requirement).
+                tc_list = []
+                for idx in sorted(pending_tool_calls.keys()):
+                    item = pending_tool_calls[idx]
+                    tc_list.append({
+                        "id": item["id"] or f"call_{iteration}_{idx}",
+                        "type": "function",
+                        "function": {
+                            "name": item["name"],
+                            "arguments": item["arguments"] or "{}",
+                        },
+                    })
+                assistant_turn: dict = {
+                    "role": "assistant",
+                    "content": round_content or None,
+                    "tool_calls": tc_list,
+                }
+                # 思维链回填：火山方舟 / 智谱 GLM 的 thinking 模式契约要求
+                # 上一轮的 ``reasoning_content`` 必须随下一轮 assistant message 一并回传
+                # （否则 400 ``The reasoning_content in the thinking mode must be passed
+                # back to the API``）。OpenAI 等标准接口会忽略未识别字段，无害。
+                if round_reasoning:
+                    assistant_turn["reasoning_content"] = round_reasoning
+                openai_messages.append(assistant_turn)
+
+                for tc in tc_list:
+                    name = tc["function"]["name"]
+                    args_raw = tc["function"]["arguments"]
+                    args_preview = ""
+                    sources_preview = ""
+                    try:
+                        parsed_args = json.loads(args_raw) if args_raw else {}
+                        if isinstance(parsed_args, dict):
+                            args_preview = str(parsed_args.get("query") or "")
+                            srcs = parsed_args.get("sources")
+                            if isinstance(srcs, list) and srcs:
+                                sources_preview = "，源：" + "/".join(str(s) for s in srcs[:5])
+                    except Exception:  # noqa: BLE001
+                        args_preview = args_raw[:80]
+                    yield _sse_info(f"🔎 {name}：{args_preview}{sources_preview}")
+                    result_json = await safe_run_tool(
+                        db,
+                        name,
+                        args_raw,
+                        active_system_skill_slugs=skill_ctx.active_system_skill_slugs,
+                        skill_id_by_tool_name=skill_ctx.skill_id_by_tool_name,
+                        allowed_platform_tools=skill_ctx.allowed_platform_tools,
+                        session_id=session.id,
+                        project_id=session.project_id,
+                        assistant_message_id=assistant_message_id,
+                        allowed_http_hosts=skill_ctx.allowed_http_hosts,
+                    )
+                    # 如果 tool 返回里带 sources_used，顺手 emit 给前端看实际命中哪几家
+                    try:
+                        payload = json.loads(result_json)
+                        used = payload.get("sources_used") if isinstance(payload, dict) else None
+                        if isinstance(used, list) and used:
+                            yield _sse_info(
+                                "✓ 命中来源：" + "、".join(str(x) for x in used[:8])
+                            )
+                    except Exception:  # noqa: BLE001
+                        pass
+                    openai_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": result_json,
+                    })
+                    tool_trace.append({"name": name, "arguments": args_raw, "result": result_json[:4000]})
+                yield _sse_info("整合工具结果中…")
+                # Continue loop: model will now see tool outputs and keep responding.
+
+            if not full_content:
+                # Model didn't commit to an answer (only reasoning, or totally empty).
+                # Never auto-promote reasoning to content — that's how users end up
+                # seeing raw thinking tokens as if they were the final reply. Emit a
+                # clean fallback message instead; reasoning is still persisted in
+                # meta_data (below) for debugging.
+                fallback = (
+                    "（模型未能在本轮给出直接答案。可能是工具结果不足或模型仍在思考，"
+                    "请稍等几秒后重新提问，或换一个更具体的提问方式。）"
+                )
+                full_content = fallback
+                yield _sse_delta(fallback)
+
+            meta: dict | None = None
+            if full_reasoning or tool_trace:
+                meta = {}
+                if full_reasoning:
+                    meta["reasoning"] = full_reasoning
+                if tool_trace:
+                    meta["tools"] = tool_trace
+
+            if not skip_persistence:
+                assistant_msg = ChatMessage(
+                    session_id=session.id,
+                    role="assistant",
+                    content=full_content,
+                    model_used=model_used,
+                    tokens_used=usage_total,
+                    meta_data=meta,
+                )
+                db.add(assistant_msg)
+
+                if session.title == "新对话" and len(session.messages) <= 1:
+                    session.title = (user_content[:50] or "新对话").strip() or "新对话"
+
+                await db.flush()
+
+            # 不论同步直流还是后台任务模式，都在 done 之前把累计 tokens 抛给
+            # 上层（同步模式下没人订阅也无害）。后台任务模式下 orchestrator
+            # 据此填 ChatMessage.tokens_used + SkillUsageLog.tokens_consumed。
+            if isinstance(usage_total, int) and usage_total > 0:
+                yield _sse_usage(usage_total)
+            yield _sse_done()
 
     except (asyncio.CancelledError, GeneratorExit):
         # 后台任务模式下（skip_persistence=True），orchestrator 会在自己的

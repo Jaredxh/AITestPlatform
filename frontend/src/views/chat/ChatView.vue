@@ -23,6 +23,8 @@
       />
 
       <div class="chat-view__messages">
+        <skill-activation-hint :event="chat.latestSkillActivation.value" />
+
         <message-list
           ref="messageListRef"
           :messages="chat.messages.value"
@@ -51,6 +53,10 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from "vue";
 import { useChat } from "@/composables/useChat";
+// 历史保留：``useSkillSelection`` / ``activate-manual`` 接口仍存在，但 chat
+// header 已不再暴露"手动多选 skill"按钮——技能激活完全交由 SkillRouter
+// 自动 (always / trigger / agent_callable) 决定，避免普通用户误以为必须先
+// 手动勾选才能让 AI 调技能。
 import { getLLMConfigsApi } from "@/services/llm";
 import { getPromptsApi, getPromptDetailApi } from "@/services/prompts";
 import type { LLMConfigInfo } from "@/services/llm";
@@ -61,6 +67,7 @@ import SessionList from "@/components/chat/SessionList.vue";
 import ChatHeader from "@/components/chat/ChatHeader.vue";
 import MessageList from "@/components/chat/MessageList.vue";
 import ChatInput from "@/components/chat/ChatInput.vue";
+import SkillActivationHint from "@/components/chat/SkillActivationHint.vue";
 
 const chat = useChat();
 const projectStore = useProjectStore();
@@ -217,6 +224,7 @@ onMounted(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  position: relative;
 }
 
 .chat-view__input-wrap {
