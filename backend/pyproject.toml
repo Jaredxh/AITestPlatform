@@ -29,6 +29,12 @@ dependencies = [
     # 发起请求；之前 fastapi/openai 间接带进来能跑，但运行时依赖应明面声明，
     # 防止上游瘦身后突然 ImportError。
     "httpx>=0.27.0",
+    # OpenClaw / Claude Code 风格的技能脚本（``run_skill_script`` 派发的 .py）
+    # 几乎清一色 ``import requests`` —— 是 Python 生态事实标准 HTTP 客户端。
+    # backend 自身用 httpx，这里把 requests 作为"技能运行时"的兜底依赖装进
+    # venv，避免每个 skill 作者都被 ``ModuleNotFoundError: requests`` 拦在门口。
+    # （未来若做"每个 skill 独立 venv"再去掉这个全局依赖。）
+    "requests>=2.32.0",
 ]
 
 [project.optional-dependencies]

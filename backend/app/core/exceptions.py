@@ -32,6 +32,20 @@ class UnauthorizedException(AppException):
 
 
 async def app_exception_handler(request: Request, exc: AppException) -> JSONResponse:
+    """业务异常统一出口。
+
+    顺带把 4xx 也打到日志（INFO 级，不当 error 喧哗），方便后续仅凭 docker logs
+    就能复现"哪个接口为什么 400"。曾经因为前端 toast 把后端 ``message`` 吃掉，
+    用户只看到 "Bad Request"，靠 SQL 噪声反查浪费时间。
+    """
+    logger.info(
+        "AppException %s %s -> %d %s: %s",
+        request.method,
+        request.url.path,
+        exc.status_code,
+        exc.code,
+        exc.message,
+    )
     return JSONResponse(
         status_code=exc.status_code,
         content={"success": False, "data": None, "message": exc.message, "code": exc.code},

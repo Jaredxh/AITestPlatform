@@ -214,18 +214,27 @@ function statusTag(status: string) {
  * 业务通过率 = passed / (total - data_failure_cases)
  * 执行通过率 = passed / total
  *
- * 极端：分母为 0（全是 data_failure，或 total 为 0）按 100% 处理，避免 NaN
- * 让进度条变灰；含义是"可统计的用例都通过了"或"无可统计用例"。
+ * 返回 ``null`` 表示"无可评估"——历史 bug：分母为 0 时硬当 100% 处理，
+ * 进度条被涂成绿色，让"全部数据失败"的执行记录看起来像"业务全通过"。
+ * 现在区分三种情况：
+ *   - 有真正的可评估用例 (denom > 0)：返回正常百分比 0~100
+ *   - 全是 data_failure（business 视图 denom=0 但 total > 0）：返回 ``null``
+ *   - 一条用例也没（total=0，例如启动后立刻被 stop）：返回 ``null``
+ *
+ * 调用方根据 null 渲染中性灰色条 + "—" 文案，不再误导成"成功"。
  */
-function computePassRate(row: ExecutionListItem): number {
+function computePassRate(row: ExecutionListItem): number | null {
   const denom = viewMode.value === "business"
     ? Math.max(0, row.total_cases - (row.data_failure_cases || 0))
     : row.total_cases;
-  if (denom <= 0) return row.total_cases === 0 ? 0 : 100;
+  if (denom <= 0) return null;
   return Math.round((row.passed_cases / denom) * 100);
 }
 
-function rateColor(rate: number): "success" | "warning" | "error" | "info" {
+function rateColor(
+  rate: number | null,
+): "success" | "warning" | "error" | "info" | "default" {
+  if (rate === null) return "default";
   if (rate >= 95) return "success";
   if (rate >= 70) return "info";
   if (rate >= 40) return "warning";
@@ -294,19 +303,23 @@ const columns = computed<DataTableColumns<ExecutionListItem>>(() => [
       const denom = viewMode.value === "business"
         ? Math.max(0, row.total_cases - (row.data_failure_cases || 0))
         : row.total_cases;
+      // rate 为 null（denom=0）→ 进度条 0% + 灰色 default 状态，配合右侧
+      // "(无可评估业务用例)" 提示，避免被误读为 100% 绿色 = 业务通过。
       return h("div", { class: "exec-history__rate-cell" }, [
         h(NProgress, {
           type: "line",
-          percentage: rate,
+          percentage: rate ?? 0,
           status: rateColor(rate),
           height: 6,
           showIndicator: false,
         }),
         h("span", { class: "exec-history__rate-text" }, [
-          `${row.passed_cases}/${denom}`,
+          rate === null ? "—" : `${row.passed_cases}/${denom}`,
           row.total_cases !== denom
             ? h("span", { class: "exec-history__rate-hint" }, [
-                ` (剔除 ${row.total_cases - denom} 项数据失败)`,
+                rate === null
+                  ? ` (无可评估业务用例，${row.total_cases} 项均为数据失败)`
+                  : ` (剔除 ${row.total_cases - denom} 项数据失败)`,
               ])
             : null,
         ]),

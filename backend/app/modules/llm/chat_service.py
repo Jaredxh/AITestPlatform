@@ -1165,6 +1165,7 @@ async def _handle_chat_stream(
                         project_id=session.project_id,
                         assistant_message_id=assistant_message_id,
                         allowed_http_hosts=skill_ctx.allowed_http_hosts,
+                        skill_roots=skill_ctx.skill_roots,
                     )
                     # 如果 tool 返回里带 sources_used，顺手 emit 给前端看实际命中哪几家
                     try:

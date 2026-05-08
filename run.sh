@@ -81,6 +81,12 @@ case "${1:-help}" in
       docker cp "$BACKEND_DIR/app/." "$BACKEND_CTN:/app/app/"
       docker cp "$BACKEND_DIR/alembic/." "$BACKEND_CTN:/app/alembic/"
       docker cp "$BACKEND_DIR/alembic.ini" "$BACKEND_CTN:/app/alembic.ini"
+      # entrypoint.sh 也得同步：改了它（如 Xvfb / VNC 启动逻辑、stale lock 清理）
+      # 必须 docker cp 进去，否则 ``docker compose restart`` 仍跑旧版本，新逻辑
+      # 不会生效。chmod +x 是兜底——历史镜像里已经 chmod 过，但用户拿到的旧
+      # 镜像 / 不同环境下保险起见显式再设一次。
+      docker cp "$BACKEND_DIR/entrypoint.sh" "$BACKEND_CTN:/app/entrypoint.sh"
+      docker exec "$BACKEND_CTN" chmod +x /app/entrypoint.sh 2>/dev/null || true
       echo "[backend] restart 容器（entrypoint 会自动跑 alembic upgrade head）..."
       docker compose restart backend
       echo "[backend] 等待健康检查..."

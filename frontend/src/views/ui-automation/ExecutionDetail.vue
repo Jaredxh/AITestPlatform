@@ -102,18 +102,28 @@
                   <span class="exec-detail__rate-hint">剔除「数据失败」用例</span>
                 </div>
                 <div class="exec-detail__rate-row">
+                  <!-- businessRate 为 null 时（全部数据失败 / 0 用例）渲染
+                       灰色 0% 条 + foot 文案显示 "—"，不再误导成"100% 绿" -->
                   <n-progress
                     type="line"
-                    :percentage="businessRate"
+                    :percentage="businessRate ?? 0"
                     :status="rateStatus(businessRate)"
                     :height="14"
                     :indicator-placement="'inside'"
                   />
                 </div>
                 <div class="exec-detail__rate-foot">
-                  通过 {{ detail.passed_cases }} / 可统计 {{ businessDenom }}
-                  <template v-if="businessDenom !== detail.total_cases">
-                    （已剔除 {{ detail.total_cases - businessDenom }} 项 🟠 数据失败）
+                  <template v-if="businessRate === null">
+                    无可评估业务用例
+                    <template v-if="detail.total_cases > 0">
+                      ({{ detail.total_cases }} 项均为 🟠 数据失败)
+                    </template>
+                  </template>
+                  <template v-else>
+                    通过 {{ detail.passed_cases }} / 可统计 {{ businessDenom }}
+                    <template v-if="businessDenom !== detail.total_cases">
+                      （已剔除 {{ detail.total_cases - businessDenom }} 项 🟠 数据失败）
+                    </template>
                   </template>
                 </div>
               </div>
@@ -127,15 +137,18 @@
                 <div class="exec-detail__rate-row">
                   <n-progress
                     type="line"
-                    :percentage="executionRate"
+                    :percentage="executionRate ?? 0"
                     :status="rateStatus(executionRate)"
                     :height="14"
                     :indicator-placement="'inside'"
                   />
                 </div>
                 <div class="exec-detail__rate-foot">
-                  通过 {{ detail.passed_cases }} / 总数 {{ detail.total_cases }}
-                  · 失败 {{ detail.failed_cases }} · 跳过 {{ detail.skipped_cases }}
+                  <template v-if="executionRate === null">无可评估用例（共 0 项）</template>
+                  <template v-else>
+                    通过 {{ detail.passed_cases }} / 总数 {{ detail.total_cases }}
+                    · 失败 {{ detail.failed_cases }} · 跳过 {{ detail.skipped_cases }}
+                  </template>
                 </div>
               </div>
             </n-gi>
@@ -675,18 +688,30 @@ const businessDenom = computed(() => {
   return Math.max(0, detail.value.total_cases - confidenceCounts.value.data_failure);
 });
 
-const businessRate = computed(() => {
-  if (!detail.value) return 0;
-  if (businessDenom.value <= 0) return detail.value.total_cases === 0 ? 0 : 100;
+/**
+ * 业务通过率，``null`` 表示"无可评估业务用例"——历史 bug：分母为 0 时硬当
+ * 100% 处理，进度条被涂绿色，让"全部数据失败"的执行看起来像"业务全通过"。
+ * 现在返回 ``null`` 让 ``rateStatus`` 走 default 灰色。
+ */
+const businessRate = computed<number | null>(() => {
+  if (!detail.value) return null;
+  if (businessDenom.value <= 0) return null;
   return Math.round((detail.value.passed_cases / businessDenom.value) * 100);
 });
 
-const executionRate = computed(() => {
-  if (!detail.value || detail.value.total_cases === 0) return 0;
+/**
+ * 执行通过率，total=0（如启动后立刻 stop）时返回 ``null``——避免被
+ * 误读为 0% 红色失败。
+ */
+const executionRate = computed<number | null>(() => {
+  if (!detail.value || detail.value.total_cases === 0) return null;
   return Math.round((detail.value.passed_cases / detail.value.total_cases) * 100);
 });
 
-function rateStatus(rate: number): "success" | "warning" | "error" | "info" {
+function rateStatus(
+  rate: number | null,
+): "success" | "warning" | "error" | "info" | "default" {
+  if (rate === null) return "default";
   if (rate >= 95) return "success";
   if (rate >= 70) return "info";
   if (rate >= 40) return "warning";

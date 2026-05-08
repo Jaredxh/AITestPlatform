@@ -103,6 +103,27 @@ class Settings(BaseSettings):
     # 空：依次回退 ``UI_HTTP_LOGIN_PROXY`` → 环境变量 ``HTTP_PROXY`` / ``http_proxy``。
     SKILL_HTTP_PROXY: str | None = None
 
+    # ── ``run_skill_script`` 子进程资源闸（可调，env 覆盖）────────────────────
+    # 默认值的折衷哲学："能跑 npx clawhub install / npm install 这种偏重的 OpenClaw
+    # 风格安装命令而不 OOM；同时 LLM 误调长跑脚本时不至于让容器挂太久。"
+    #
+    # 上一版（CPU=30s / AS=512MB / wall-clock=35s）实测在 ``cq-app-dklive`` 触发
+    # ``npx clawhub install cq-backend-login`` 时反复 V8 OOM
+    # （``Fatal process out of memory: Zone``），堆压到 384MB 直接崩。
+    #
+    # 新值经验依据：
+    # - V8 实测 ``npm install`` 高峰约 600~900 MB old-space + ~300 MB native heap，
+    #   留 1.5x buffer = ``RLIMIT_AS=2 GB``、``--max-old-space-size=1024``。
+    # - ``npm install`` 单步动辄 30~60s，串行依赖更久，wall-clock 90s 是"日常诊断
+    #   够用、安装类一次走得过、但不会卡死容器"的折衷。
+    # - ``RLIMIT_CPU`` 是**累计** CPU（多核会很快累加），单核一秒 = 1 实秒，多核
+    #   并行编译时只算实际占用，60s 给 npm gyp 编译留余量。
+    SKILL_SCRIPT_TIMEOUT_S: int = 90
+    SKILL_SCRIPT_RLIMIT_CPU_S: int = 60
+    SKILL_SCRIPT_RLIMIT_AS_MB: int = 2048
+    SKILL_SCRIPT_RLIMIT_FSIZE_MB: int = 256
+    SKILL_SCRIPT_NODE_MAX_OLD_SPACE_MB: int = 1024
+
     @property
     def DATABASE_URL(self) -> str:
         return (

@@ -103,5 +103,41 @@ activation_mode: agent_callable
     for i in range(MAX_ATTACHMENTS + 1):
         entries[f"f{i}.txt"] = b"a"
     raw = _zip_bytes(entries)
-    with pytest.raises(SkillParseError, match="more than"):
+    with pytest.raises(SkillParseError, match="附件数量超过上限"):
         unpack_skill_zip(raw)
+
+
+def test_ignores_dev_noise_files() -> None:
+    """``.git/`` / ``__pycache__/`` / ``.DS_Store`` 等不算附件，不该撑爆上限。
+
+    背景：用户常把整个 git 工作树打包上来，光 ``.git/`` 一个目录就 100+ 文件，
+    历史实现会把它们都当真附件，瞬间触发 ``MAX_ATTACHMENTS`` 拒绝。修复后这些
+    路径应当被静默过滤，仅 ``real.txt`` 这一个真正的附件被保留。
+    """
+    md = b"""---
+name: Noise Skill
+description: d
+slug: noise-skill
+version: 1.0.0
+category: custom
+tags: []
+triggers: []
+tools_required: []
+activation_mode: agent_callable
+---
+
+# N
+"""
+    entries: dict[str, bytes] = {"pkg/SKILL.md": md, "pkg/real.txt": b"real"}
+    for i in range(80):
+        entries[f"pkg/.git/objects/aa/{i:02d}"] = b"obj"
+    entries["pkg/scripts/__pycache__/x.cpython-310.pyc"] = b"x"
+    entries["pkg/.DS_Store"] = b"ds"
+    entries["pkg/node_modules/foo/index.js"] = b"js"
+    entries["pkg/.vscode/settings.json"] = b"{}"
+    entries["pkg/__MACOSX/._real.txt"] = b"resfork"
+
+    raw = _zip_bytes(entries)
+    parsed, attachments = unpack_skill_zip(raw)
+    assert parsed.slug == "noise-skill"
+    assert [rel for rel, _ in attachments] == ["real.txt"]

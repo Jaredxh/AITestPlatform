@@ -279,8 +279,7 @@ async function submitZip() {
       }
     }
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "导入失败";
-    message.error(msg);
+    message.error(formatImportError(e), { duration: 8000 });
   } finally {
     busy.value = false;
   }
@@ -315,11 +314,31 @@ async function submitUrl() {
       emit("imported");
     }
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "URL 导入失败";
-    message.error(msg);
+    message.error(formatImportError(e, "URL 导入失败"), { duration: 8000 });
   } finally {
     busy.value = false;
   }
+}
+
+/**
+ * 把 ofetch FetchError 拆出后端的真实 ``message`` / ``code``。
+ * 历史 bug：原代码只取 ``e.message``，结果用户看到的是 "Bad Request" 这种 HTTP
+ * status 文案而不是 ``SKILL.md: missing required field 'name'`` 这种可定位的
+ * 业务错。后端 ``app_exception_handler`` 已经在响应体写了 ``{message, code}``，
+ * 这里把它读出来就行。
+ */
+function formatImportError(e: unknown, fallback = "导入失败"): string {
+  const data = (e as { data?: { message?: string; code?: string } })?.data;
+  const status = (e as { status?: number; statusCode?: number })?.status
+    ?? (e as { statusCode?: number })?.statusCode;
+  const detail = data?.message || (e as Error)?.message || fallback;
+  const codeTag = data?.code ? ` [${data.code}]` : "";
+  const statusTag = status ? ` (${status})` : "";
+  return `${fallback}${statusTag}${codeTag}: ${truncate(detail, 240)}`;
+}
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max)}...` : s;
 }
 </script>
 

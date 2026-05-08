@@ -27,9 +27,17 @@ from app.modules.skills.http_tools import (
     extract_allowed_hosts_from_body,
     http_tool_schemas,
 )
+from app.modules.skills.importer import skill_version_directory
 from app.modules.skills.models import Skill, SkillUsageLog
 from app.modules.skills.platform_tools import platform_chat_openai_schemas
 from app.modules.skills.safety import extract_when_to_use, wrap_with_safety
+from app.modules.skills.script_tools import (
+    AllowedScript,
+    SkillRoot,
+    extract_allowed_scripts_from_body,
+    script_tool_schema,
+)
+from app.modules.skills.skill_fs_tools import skill_fs_tool_schemas
 from app.modules.skills.service import (
     list_agent_callable_skills,
 )
@@ -320,6 +328,17 @@ class SkillContext:
     #: candidate skill 的 SKILL.md 正文中明文出现的 ``http(s)://host[:port]``）。
     #: 给 ``run_http_*`` 在执行前做 SSRF 闸门。
     allowed_http_hosts: frozenset[str] = field(default_factory=frozenset)
+    #: 本轮内"作者推荐入口"的脚本 hint 列表（来自 SKILL.md 正文中明文写过的
+    #: ``python xxx.py`` / ``node yyy.js`` / ``bash xxx.sh``）。**只用作
+    #: system prompt 里 LLM 的提示**——告诉它"这个 skill 作者点名了这些命令"，
+    #: 不再是运行时闸门。重构前是闸门，但 OpenClaw 信任模型下"安装即信任"，
+    #: 闸门下沉到 :attr:`skill_roots`。
+    allowed_skill_scripts: frozenset[AllowedScript] = field(default_factory=frozenset)
+    #: 本轮内"LLM 可访问"的 skill 附件根目录集合（每个 candidate skill 一条）。
+    #: ``run_skill_script`` / ``read_skill_file`` / ``list_skill_files`` 三个工
+    #: 具的统一运行时闸门：``skill_slug`` 必须命中本集合，目标路径必须在该
+    #: skill 的 abs_dir 之内。这是 OpenClaw 信任模型的核心载体。
+    skill_roots: frozenset[SkillRoot] = field(default_factory=frozenset)
 
 
 async def _fetch_skills_by_ids(
@@ -380,7 +399,41 @@ async def compose(
     tool_to_skill: dict[str, uuid.UUID] = {}
     allowed_names: set[str] = set()
     allowed_hosts: set[str] = set()
+    allowed_scripts: set[AllowedScript] = set()
+    skill_roots: set[SkillRoot] = set()
     activated: list[ActivatedSkillInfo] = []
+
+    def _absorb_skill_resources(s: Skill) -> None:
+        """把 SKILL.md 的 http host、附件根目录、脚本 hint 登记到本轮上下文。
+
+        非 system 的 skill（``project_id is not None``）才会:
+
+        - 加 :class:`SkillRoot`（``run_skill_script`` / ``read_skill_file`` /
+          ``list_skill_files`` 的运行时闸门）；
+        - 抽脚本 hint（仅 system prompt 用）。
+
+        ``allowed_hosts`` 不区分 system / 非 system——内置 skill 也可能引用
+        平台 API URL（兼容老逻辑）。
+        """
+        body = s.body or ""
+        allowed_hosts.update(extract_allowed_hosts_from_body(body))
+        # ``project_id is None`` 是平台自带的 system_* skill；这些 skill 的
+        # SKILL.md 由内部托管，无附件脚本，不进入 SkillRoot 系统。
+        if s.project_id is None:
+            return
+        try:
+            attach_dir = skill_version_directory(s.project_id, s.id, s.db_version)
+        except Exception:  # noqa: BLE001 —— 路径计算失败不该把整轮 chat 拖死
+            logger.warning("skill_version_directory failed for slug=%s", s.slug, exc_info=True)
+            return
+        skill_roots.add(SkillRoot(skill_slug=s.slug, abs_dir=str(attach_dir)))
+        scripts = extract_allowed_scripts_from_body(
+            body,
+            skill_slug=s.slug,
+            abs_dir=attach_dir,
+        )
+        if scripts:
+            allowed_scripts.update(scripts)
 
     # ── Layer 1：always ────────────────────────────────────────────
     always_skills = await _list_always_skills(db, project_id)
@@ -396,7 +449,7 @@ async def compose(
                     activation_reason="always",
                 ),
             )
-            allowed_hosts |= extract_allowed_hosts_from_body(s.body or "")
+            _absorb_skill_resources(s)
             if s.slug.startswith("system_"):
                 active_slugs.add(s.slug)
                 allowed_names |= _collect_platform_names(s)
@@ -419,7 +472,7 @@ async def compose(
                 activation_reason="manual",
             ),
         )
-        allowed_hosts |= extract_allowed_hosts_from_body(s.body or "")
+        _absorb_skill_resources(s)
         if s.slug.startswith("system_"):
             active_slugs.add(s.slug)
             allowed_names |= _collect_platform_names(s)
@@ -470,7 +523,7 @@ async def compose(
         cand_tools.append(spec)
         cand_tool_names.add(fname)
         tool_to_skill[fname] = s.id
-        allowed_hosts |= extract_allowed_hosts_from_body(s.body or "")
+        _absorb_skill_resources(s)
         if s.slug.startswith("system_"):
             active_slugs.add(s.slug)
             allowed_names |= _collect_platform_names(s)
@@ -509,25 +562,78 @@ async def compose(
             cand_tools.append(spec)
             cand_tool_names.add(fname)
 
+    # ── 技能附件操作三件套自动暴露（OpenClaw 信任模型）──
+    # 任意 candidate skill 是非 system_*（即用户安装的）→ 它就有 attach 目录，
+    # 一律把 ``run_skill_script`` + ``read_skill_file`` + ``list_skill_files``
+    # 加进 LLM 工具集。运行时闸门（slug 是否本轮可见 + 路径是否在 attach 目录
+    # 内 + 扩展名 / 二进制 / 黑名单）由各 tool 自己持有。
+    if skill_roots:
+        for spec in [script_tool_schema(), *skill_fs_tool_schemas()]:
+            fname = spec["function"]["name"]
+            if fname in cand_tool_names:
+                continue
+            cand_tools.append(spec)
+            cand_tool_names.add(fname)
+
     allowed_frozen = frozenset(allowed_names)
     allowed_hosts_frozen = frozenset(allowed_hosts)
+    allowed_scripts_frozen = frozenset(allowed_scripts)
+    skill_roots_frozen = frozenset(skill_roots)
 
-    # 轻量系统提示：减少「只说在查却不调 http_*」与工具轮次浪费（不替代 SKILL 正文）
-    if allowed_hosts_frozen:
-        sys_msgs.append({
-            "role": "system",
-            "content": (
-                "【技能包 HTTP 协议】本轮已启用 http_get_json / http_post_json，"
-                "URL 的 host:port 仅允许为各技能 SKILL.md 正文中出现过的地址。\n"
-                "执行顺序：① 调用与意图匹配的 skill_*__invoke 加载完整指令；"
-                "② 按文档用 http_* 拉取真实响应（JSON 或文本）；"
-                "③ 用中文 Markdown 整理结果。\n"
-                "需要页面渲染或浏览器端 JS 时，请通过技能文档中的 HTTP API 获取"
-                "服务端数据；对话内不提供任意 JS 沙箱执行。\n"
-                "禁止只回复「正在查询默认结果」等空话而不调用工具；"
-                "禁止编造接口数据。"
-            ),
-        })
+    # 轻量系统提示：把工具能力 + skill 入口 hint 一并给 LLM，避免它 30k 字看完
+    # SKILL.md 后又开始挣扎找 API。
+    if allowed_hosts_frozen or skill_roots_frozen:
+        msg_parts: list[str] = ["【技能包工具协议】本轮已启用以下平台工具："]
+        if allowed_hosts_frozen:
+            msg_parts.append(
+                "- http_get_json / http_post_json：调 SKILL.md 正文里出现过的 http(s) 接口；"
+                "URL host:port 必须在白名单里。",
+            )
+        if skill_roots_frozen:
+            msg_parts.append(
+                "- run_skill_script：执行任意已激活技能附件目录里的 .py / .js / .sh 脚本"
+                "（SKILL.md 里写过的入口 + 同 skill 下其它脚本都行）。"
+                "**不要依赖 stdin 交互**——优先用脚本提供的非交互参数（如 `-c`、`--check`）；"
+                "wall-clock 35s 必杀。",
+            )
+            msg_parts.append(
+                "- read_skill_file：读取已激活技能附件里的文本文件"
+                "（references/*.md、prompts/*.md、configs/*.yaml 等）。"
+                "用于查阅文档引用的资料、检查脚本源码确定参数、对比配置示例。",
+            )
+            msg_parts.append(
+                "- list_skill_files：列出已激活技能附件目录树，发现可用资源。"
+                "建议在你不熟悉某个 skill 结构时**先调一次 list_skill_files** 探查。",
+            )
+
+        # SKILL.md 作者点名的常用入口 → 系统提示划重点（命中率高）
+        if allowed_scripts_frozen:
+            by_slug: dict[str, list[str]] = {}
+            for sc in allowed_scripts_frozen:
+                by_slug.setdefault(sc.skill_slug, []).append(f"{sc.interpreter} {sc.relpath}")
+            entry_lines: list[str] = []
+            for slug in sorted(by_slug):
+                cmds = sorted(set(by_slug[slug]))
+                entry_lines.append(f"  · {slug}: {', '.join(cmds[:8])}")
+            msg_parts.append("作者推荐的脚本入口（来自 SKILL.md 正文）：")
+            msg_parts.extend(entry_lines)
+
+        # 本轮所有可访问 skill_slug 列表——LLM 调三件套时填 ``skill_slug`` 用
+        if skill_roots_frozen:
+            slugs = sorted({r.skill_slug for r in skill_roots_frozen})
+            msg_parts.append(f"本轮可访问 skill_slug：{slugs}")
+
+        msg_parts.append(
+            "执行顺序建议：① 不熟悉的 skill 先 list_skill_files 探查；"
+            "② 调 skill_*__invoke 或 read_skill_file 加载指令 / 文档；"
+            "③ 按文档调 run_skill_script（如有）/ http_*；"
+            "④ 用中文 Markdown 整理结果给用户。",
+        )
+        msg_parts.append(
+            "禁止凭脑补编造接口数据；禁止只回复「正在查询」等空话而不调工具；"
+            "禁止用 http_* 自己拼装本应由脚本处理的鉴权 / 签名逻辑。",
+        )
+        sys_msgs.append({"role": "system", "content": "\n".join(msg_parts)})
 
     return SkillContext(
         system_messages=sys_msgs,
@@ -537,6 +643,8 @@ async def compose(
         allowed_platform_tools=allowed_frozen,
         activated_skills=activated,
         allowed_http_hosts=allowed_hosts_frozen,
+        allowed_skill_scripts=allowed_scripts_frozen,
+        skill_roots=skill_roots_frozen,
     )
 
 

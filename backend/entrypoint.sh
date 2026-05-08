@@ -96,17 +96,57 @@ echo ""
 NOVNC_ENABLED="${UI_NOVNC_ENABLED:-true}"
 NOVNC_PORT="${UI_NOVNC_PORT:-6080}"
 VNC_DISPLAY="${UI_VNC_DISPLAY:-:99}"
+# 从 ":99" 提取数字 99，给 lock / unix socket 路径使用
+VNC_DISPLAY_NUM="${VNC_DISPLAY#:}"
+
+# ── 清理上一轮残留的 X server 资源 ──
+# 历史 bug：``docker compose restart`` 容器进程重启但 ``/tmp`` 不会清空（在容器
+# 写层、不是 tmpfs）。旧 Xvfb 进程被 kill 后留下：
+#   - /tmp/.X${N}-lock          —— 老 Xvfb 进程的 PID 锁文件
+#   - /tmp/.X11-unix/X${N}      —— Unix domain socket
+# 新 Xvfb 启动时看到 ``.X99-lock`` 直接报 ``Server is already active`` 拒启，
+# 于是 DISPLAY=:99 被 export 出去但实际后面没有真正的 X server，所有 chromium
+# 启动都会"Missing X server"。每次 restart 都会触发，redeploy 流程下尤其常见。
+#
+# 清理策略：lock 文件的 PID 必须**确认那个进程已经不在了**才能删，否则会破坏
+# 仍在跑的 Xvfb（虽然在容器场景几乎不会发生，但还是稳一点）。
+if [ -e "/tmp/.X${VNC_DISPLAY_NUM}-lock" ]; then
+  OLD_XVFB_PID=$(cat "/tmp/.X${VNC_DISPLAY_NUM}-lock" 2>/dev/null | tr -d ' ')
+  if [ -z "$OLD_XVFB_PID" ] || ! kill -0 "$OLD_XVFB_PID" 2>/dev/null; then
+    echo "[Xvfb] 清理上一轮残留 lock /tmp/.X${VNC_DISPLAY_NUM}-lock (pid=$OLD_XVFB_PID 已不存在)"
+    rm -f "/tmp/.X${VNC_DISPLAY_NUM}-lock" "/tmp/.X11-unix/X${VNC_DISPLAY_NUM}"
+  else
+    echo "[Xvfb] WARN: /tmp/.X${VNC_DISPLAY_NUM}-lock 关联的 pid=$OLD_XVFB_PID 仍在运行，跳过清理"
+  fi
+fi
 
 if command -v Xvfb >/dev/null 2>&1; then
   echo "[Xvfb] Starting display $VNC_DISPLAY for headed browser support..."
   Xvfb "$VNC_DISPLAY" -screen 0 1920x1080x24 -nolisten tcp -ac >/tmp/xvfb.log 2>&1 &
+  XVFB_PID=$!
   export DISPLAY="$VNC_DISPLAY"
   # Xvfb 起来需要 socket 文件就绪；600ms 经验值已稳定
   sleep 0.6
-  echo "  DISPLAY=$DISPLAY (headed mode in container)"
+  # 验证 Xvfb 真的活着 + socket 就绪。失败时 unset DISPLAY 让下游 chromium 走
+  # headless（而不是带着死的 DISPLAY 跑导致"Missing X server"）。
+  if ! kill -0 "$XVFB_PID" 2>/dev/null \
+      || [ ! -S "/tmp/.X11-unix/X${VNC_DISPLAY_NUM}" ]; then
+    echo "[Xvfb] WARN: Xvfb 启动失败（pid=$XVFB_PID 不在 / socket 不就绪），unset DISPLAY"
+    echo "[Xvfb] 详情见 /tmp/xvfb.log:"
+    tail -10 /tmp/xvfb.log 2>/dev/null | sed 's/^/  /'
+    unset DISPLAY
+  else
+    echo "  DISPLAY=$DISPLAY (headed mode in container)"
+  fi
 else
   echo "[Xvfb] Not installed, headed browser may fail in container."
 fi
+
+# x11vnc / websockify 不需要预清理——``docker compose restart`` 会先 SIGTERM
+# 容器的 PID 1（entrypoint），signal 会传播给所有子进程（Xvfb / x11vnc /
+# websockify），新容器启动时这些进程都已彻底死掉。只有 Xvfb 在被杀时**不会**
+# 清理 ``/tmp/.X99-lock`` 锁文件（这是 Xvfb 已知行为），所以上面那段 lock
+# 清理才有必要。
 
 if [ "$NOVNC_ENABLED" = "true" ] || [ "$NOVNC_ENABLED" = "1" ]; then
   if [ -n "$DISPLAY" ] && command -v x11vnc >/dev/null 2>&1 && command -v websockify >/dev/null 2>&1; then

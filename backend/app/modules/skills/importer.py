@@ -32,6 +32,53 @@ ZIP_MAX_BYTES = 5 * 1024 * 1024
 MAX_ATTACHMENTS = 50
 MAX_ATTACH_FILE_BYTES = 1024 * 1024
 
+# ── ZIP 内自动忽略的"开发噪音"目录 / 文件 ──
+#
+# 用户经常把整个 git 工作树（含 ``.git/`` 全套对象）或 Python ``__pycache__/``
+# 直接 zip 上来，光这两个目录就轻易超过 ``MAX_ATTACHMENTS=50``，导致原本能用
+# 的 SKILL.md + 几个真正附件被拒。这些路径**不可能是技能本身的内容**，统一在
+# 解压前过滤掉，比让用户每次手工 ``zip -x '*/.git/*'`` 友好得多。
+#
+# 命中规则：路径里**任意一段**等于下列名字（不区分大小写匹配 macOS / win 习惯）。
+# 之所以匹配"段"而不是 startswith：嵌套路径如 ``foo/.git/HEAD`` 也得过滤掉。
+_IGNORED_PATH_SEGMENTS = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        "__pycache__",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".mypy_cache",
+        ".tox",
+        ".venv",
+        "venv",
+        "node_modules",
+        ".idea",
+        ".vscode",
+        ".DS_Store",  # 也是文件名匹配
+        "Thumbs.db",
+        "__MACOSX",
+    },
+)
+_IGNORED_FILENAME_SUFFIXES = (".pyc", ".pyo", ".swp", ".swo")
+
+
+def _is_ignored_zip_entry(rel: str) -> bool:
+    """判断 ZIP 内某条相对路径是否应当忽略（VCS / 缓存 / IDE / OS 元数据）。"""
+    parts = [p for p in rel.split("/") if p]
+    if not parts:
+        return True
+    for seg in parts:
+        if seg in _IGNORED_PATH_SEGMENTS:
+            return True
+        if seg.startswith("._"):  # macOS resource fork
+            return True
+    last = parts[-1]
+    if last.endswith(_IGNORED_FILENAME_SUFFIXES):
+        return True
+    return False
+
 
 def skill_version_directory(project_id: uuid.UUID, skill_id: uuid.UUID, db_version: int) -> Path:
     base = Path(settings.UPLOAD_DIR) / "skills" / str(project_id) / str(skill_id) / str(db_version)
@@ -76,6 +123,7 @@ def unpack_skill_zip(raw: bytes) -> tuple[ParsedSkill, list[tuple[str, bytes]]]:
         parsed = parse_skill_md(text)
 
         attach_count = 0
+        ignored_count = 0
         for info in zf.infolist():
             if info.is_dir():
                 continue
@@ -91,6 +139,10 @@ def unpack_skill_zip(raw: bytes) -> tuple[ParsedSkill, list[tuple[str, bytes]]]:
                     continue
                 rel = name
 
+            if _is_ignored_zip_entry(rel):
+                ignored_count += 1
+                continue
+
             rel_path = Path(rel)
             if rel_path.is_absolute() or ".." in rel_path.parts:
                 raise SkillParseError(f"unsafe attachment path: {rel!r}")
@@ -105,7 +157,14 @@ def unpack_skill_zip(raw: bytes) -> tuple[ParsedSkill, list[tuple[str, bytes]]]:
             attachments.append((rel.replace("\\", "/"), data))
             attach_count += 1
             if attach_count > MAX_ATTACHMENTS:
-                raise SkillParseError(f"more than {MAX_ATTACHMENTS} attachments")
+                raise SkillParseError(
+                    f"附件数量超过上限 {MAX_ATTACHMENTS} 个；请在打包前剔除非技能内容"
+                    "（.git/、__pycache__/、node_modules/、.DS_Store 等本平台已自动忽略，"
+                    "若仍超限说明真实附件过多，建议精简或拆成多个技能）",
+                )
+
+        if ignored_count:
+            logger.info("skill import: ignored %d dev/cache files in ZIP", ignored_count)
 
     return parsed, attachments
 
