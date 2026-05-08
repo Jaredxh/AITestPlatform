@@ -83,7 +83,10 @@ services:
       # 默认值能撑过 ``npx/npm/pip install`` 这种 OpenClaw 风格自启动安装。
       SKILL_SCRIPT_TIMEOUT_S: ${SKILL_SCRIPT_TIMEOUT_S:-90}
       SKILL_SCRIPT_RLIMIT_CPU_S: ${SKILL_SCRIPT_RLIMIT_CPU_S:-60}
-      SKILL_SCRIPT_RLIMIT_AS_MB: ${SKILL_SCRIPT_RLIMIT_AS_MB:-2048}
+      # ⚠️ RLIMIT_AS 是**虚拟地址空间**而非 RSS：Node 64-bit 启动就预留 ~1 GB；
+      # undici 的 wasm + V8 内部 + native heap 加起来轻易超过 2 GB（已实测）。
+      # 4 GB 虚拟空间≠真用 4 GB 物理内存，可放心给。详见 app/config.py 注释。
+      SKILL_SCRIPT_RLIMIT_AS_MB: ${SKILL_SCRIPT_RLIMIT_AS_MB:-4096}
       SKILL_SCRIPT_RLIMIT_FSIZE_MB: ${SKILL_SCRIPT_RLIMIT_FSIZE_MB:-256}
       SKILL_SCRIPT_NODE_MAX_OLD_SPACE_MB: ${SKILL_SCRIPT_NODE_MAX_OLD_SPACE_MB:-1024}
     ports:

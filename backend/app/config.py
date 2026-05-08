@@ -107,20 +107,28 @@ class Settings(BaseSettings):
     # 默认值的折衷哲学："能跑 npx clawhub install / npm install 这种偏重的 OpenClaw
     # 风格安装命令而不 OOM；同时 LLM 误调长跑脚本时不至于让容器挂太久。"
     #
-    # 上一版（CPU=30s / AS=512MB / wall-clock=35s）实测在 ``cq-app-dklive`` 触发
-    # ``npx clawhub install cq-backend-login`` 时反复 V8 OOM
-    # （``Fatal process out of memory: Zone``），堆压到 384MB 直接崩。
+    # 关键事实（容易踩坑）：
+    # 1) ``RLIMIT_CPU`` / ``RLIMIT_AS`` / ``RLIMIT_FSIZE`` 通过 ``preexec_fn`` 在
+    #    fork 之后 exec 之前 setrlimit() —— Linux 上子孙进程**默认继承**，
+    #    Python → Node → npm install 整条链都受 cap（不是只 cap 父进程）。
+    # 2) ``NODE_OPTIONS`` 走 env 传递，子孙进程也都拿得到。
+    # 3) 但 ``--max-old-space-size`` 仅控制 **V8 JavaScript 老生代堆**，不控制：
+    #    - WebAssembly 的 ``wasm.Memory``（如 undici 的 llhttp 是 wasm 实现，
+    #      启动时一次性 mmap 几十 MB，**不在老生代统计里**）
+    #    - native heap（libuv / undici C++ buffer）
+    #    - V8 内部数据结构（codespace / handle pool / JIT cache，~200~400 MB）
+    # 4) ``RLIMIT_AS`` 限的是**虚拟地址空间**而非 RSS。Node 64-bit 启动就预留 ~1 GB，
+    #    所以 ``RLIMIT_AS`` 必须**大于 V8 老生代 + V8 内部 + native + wasm 之和**，
+    #    否则会出 ``RangeError: WebAssembly.instantiate(): Out of memory``。
     #
-    # 新值经验依据：
-    # - V8 实测 ``npm install`` 高峰约 600~900 MB old-space + ~300 MB native heap，
-    #   留 1.5x buffer = ``RLIMIT_AS=2 GB``、``--max-old-space-size=1024``。
-    # - ``npm install`` 单步动辄 30~60s，串行依赖更久，wall-clock 90s 是"日常诊断
-    #   够用、安装类一次走得过、但不会卡死容器"的折衷。
-    # - ``RLIMIT_CPU`` 是**累计** CPU（多核会很快累加），单核一秒 = 1 实秒，多核
-    #   并行编译时只算实际占用，60s 给 npm gyp 编译留余量。
+    # 历史踩坑：
+    # - v1 (RLIMIT_AS=512MB / old-space=384MB) → V8 Zone OOM
+    # - v2 (RLIMIT_AS=2 GB / old-space=1024MB) → undici wasm OOM（虚拟地址空间不够）
+    # - v3 (本版本，RLIMIT_AS=4 GB / old-space=1024MB) → 留出 ~3 GB 给 V8 内部 +
+    #   native + wasm + npm 解压；4 GB 是**虚拟空间**，物理 RSS 实际只用 200~600 MB。
     SKILL_SCRIPT_TIMEOUT_S: int = 90
     SKILL_SCRIPT_RLIMIT_CPU_S: int = 60
-    SKILL_SCRIPT_RLIMIT_AS_MB: int = 2048
+    SKILL_SCRIPT_RLIMIT_AS_MB: int = 4096
     SKILL_SCRIPT_RLIMIT_FSIZE_MB: int = 256
     SKILL_SCRIPT_NODE_MAX_OLD_SPACE_MB: int = 1024
 

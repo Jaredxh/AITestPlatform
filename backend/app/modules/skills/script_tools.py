@@ -73,9 +73,20 @@ SCRIPT_TOOL_NAME = "run_skill_script"
 # ``_load_resource_limits`` 在运行时回读 settings——这样运维改 .env 之后
 # ``./run.sh redeploy backend`` 立即生效，无需改代码。
 #
-# 历史：上一版 RLIMIT_AS=512MB / NODE old-space=384MB / wall-clock=35s 在
-# ``cq-app-dklive`` 触发 ``npx clawhub install`` 时 V8 反复 OOM。新默认能撑过
-# ``npm/npx install`` 这种 OpenClaw 风格的"自启动安装"流程。
+# 关键事实（避免踩坑）：
+# - rlimit 通过 ``preexec_fn`` 在 fork 之后 exec 之前 setrlimit()——Linux 上
+#   子孙进程**默认继承**，所以 Python → Node → npm install 整条链都受 cap。
+# - ``NODE_OPTIONS=--max-old-space-size`` 通过 env 传给所有子孙，但仅控
+#   V8 JavaScript 老生代堆；**不**控 wasm（如 undici 的 llhttp）/native heap/
+#   V8 内部数据结构。wasm 启动会一次性 mmap 几十 MB 到独立地址段，
+#   受 ``RLIMIT_AS`` 约束而**不**受 NODE_OPTIONS 约束。
+# - ``RLIMIT_AS`` 限的是**虚拟地址空间**（mmap 总额度）而非 RSS（物理内存）。
+#
+# 历史踩坑：
+# - v1 (RLIMIT_AS=512MB / old-space=384MB) → V8 Zone OOM
+# - v2 (RLIMIT_AS=2 GB / old-space=1024MB) → undici wasm OOM（虚拟空间不够）
+# - v3 (本版本，RLIMIT_AS=4 GB / old-space=1024MB) → 验证可撑过 npx clawhub
+#   install，因为 4 GB 虚拟空间≠真用 4 GB 物理内存（Node 实际 RSS ~200~600 MB）。
 WALL_CLOCK_TIMEOUT_SECONDS: float = float(settings.SKILL_SCRIPT_TIMEOUT_S)
 RLIMIT_CPU_SECONDS: int = settings.SKILL_SCRIPT_RLIMIT_CPU_S
 RLIMIT_AS_BYTES: int = settings.SKILL_SCRIPT_RLIMIT_AS_MB * 1024 * 1024
