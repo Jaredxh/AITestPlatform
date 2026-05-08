@@ -33,6 +33,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from app.modules.llm.providers import MAX_TOKENS_ASSERT, safe_max_tokens
 from app.modules.llm.providers import complete_chat as _default_complete_chat
 
 logger = logging.getLogger(__name__)
@@ -242,7 +243,9 @@ class AssertionJudge:
                 api_key=llm_config.api_key,
                 base_url=llm_config.base_url,
                 temperature=llm_config.temperature,
-                max_tokens=llm_config.max_tokens,
+                # 断言只输出 ``passed/reason/evidence`` 短 JSON，4K 足够；
+                # 防 32K+ 配置被 Volcengine 这类供应商以 InvalidParameter 拒掉。
+                max_tokens=safe_max_tokens(llm_config.max_tokens, MAX_TOKENS_ASSERT),
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("AssertionJudge LLM call failed: %s", exc)

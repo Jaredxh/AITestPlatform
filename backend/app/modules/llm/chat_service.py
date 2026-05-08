@@ -23,7 +23,11 @@ from app.modules.llm.intent_handler import (
     resolve_document,
 )
 from app.modules.llm.models import ChatMessage, ChatSession, LLMConfig
-from app.modules.llm.providers import stream_chat
+from app.modules.llm.providers import (
+    MAX_TOKENS_LONG,
+    safe_max_tokens,
+    stream_chat,
+)
 from app.modules.llm.schemas import (
     ChatMessageResponse,
     ChatSessionCreateRequest,
@@ -1045,7 +1049,9 @@ async def _handle_chat_stream(
                     api_key=api_key,
                     base_url=config.base_url,
                     temperature=config.temperature,
-                    max_tokens=config.max_tokens,
+                    # 8K 兜底 cap：见 providers.py 里 MAX_TOKENS_LONG 的注释，
+                    # 防 Volcengine/DeepSeek 类供应商对 32K+ max_tokens 直接 400。
+                    max_tokens=safe_max_tokens(config.max_tokens, MAX_TOKENS_LONG),
                     tools=tools_for_chat,
                     tool_choice=tool_choice,
                 ):

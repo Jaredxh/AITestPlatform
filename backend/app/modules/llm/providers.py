@@ -36,6 +36,45 @@ LLM_NON_STREAM_TIMEOUT = httpx.Timeout(
 )
 
 
+# ── 输出 token 上限的两条认知 ──
+#
+# 1) ``max_tokens`` 是"模型这一次能输出多少 token"，**不是上下文窗口**。
+#    很多供应商上下文 200K 但单次输出只允许 8K~16K，例如：
+#      - Volcengine ARK GLM-5.1：单次输出上限 ~8K（超过返回 400 InvalidParameter）
+#      - DeepSeek：单次输出上限 8K
+#      - OpenAI gpt-4o：单次输出上限 16K
+#      - Claude（custom 接入）：单次输出上限 8K
+#
+# 2) 用户在 LLM 配置里填 32768 / 200K 这种巨值是常见误用——他们以为是上下文。
+#    平台不知道用户当前模型的真实上限，所以**调用方必须按场景再 clamp 一次**：
+#      - 评审：JSON 输出 ~3K tokens，用 ``MAX_TOKENS_REVIEW=8192``
+#      - UI 断言：true/false + 简短 reason，用 ``MAX_TOKENS_ASSERT=4096``
+#      - 用例生成 / 对话：用户可能确实需要长输出，用 ``MAX_TOKENS_LONG=8192``
+#        作为兜底（用户配置低于这值则按用户的；高于则截到 8K，避免 400）。
+#
+# 这些值不是"硬性正确"，而是"绝大多数主流供应商都不会拒绝的安全值"。
+# 想用更长输出？不要改这些常量，去 LLM 配置里把 max_tokens 主动调小到符合
+# 自己 provider 上限即可（这样对所有调用路径生效）。
+MAX_TOKENS_REVIEW = 8192
+MAX_TOKENS_ASSERT = 4096
+MAX_TOKENS_LONG = 8192
+
+
+def safe_max_tokens(configured: int | None, hard_cap: int) -> int:
+    """把用户配置的 ``max_tokens`` clamp 到当前调用场景的安全上限。
+
+    - ``configured`` 为 None / 0 → 退回 ``hard_cap``；
+    - 否则 ``min(configured, hard_cap)``。
+
+    经验值：用户经常把 ``max_tokens`` 配成上下文窗口大小（32K / 200K），导致
+    "需求评审"这类小输出场景被供应商以 ``InvalidParameter: max_tokens`` 拒绝。
+    在每个场景的入口统一 clamp 一次，比让用户自己在前端调小要可靠得多。
+    """
+    if not configured:
+        return hard_cap
+    return min(configured, hard_cap)
+
+
 def build_client(
     provider: str,
     api_key: str | None = None,

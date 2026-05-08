@@ -14,7 +14,12 @@ from app.core.exceptions import AppException, NotFoundException
 from app.modules.auth.models import User
 from app.modules.llm.models import LLMConfig
 from app.modules.llm.prompts.review import REVIEW_SYSTEM_PROMPT, build_review_user_prompt
-from app.modules.llm.providers import LLM_NON_STREAM_TIMEOUT, build_client
+from app.modules.llm.providers import (
+    LLM_NON_STREAM_TIMEOUT,
+    MAX_TOKENS_REVIEW,
+    build_client,
+    safe_max_tokens,
+)
 from app.modules.requirements.models import AIReview, RequirementDocument
 from app.modules.requirements.schemas import ReviewListResponse, ReviewResponse
 
@@ -152,7 +157,11 @@ async def _call_llm_review(
 
     - 非流式调用，沿用 ``LLM_NON_STREAM_TIMEOUT``（180s）：30K 字符评审
       生成完整 JSON 常 30~120s，原 45s read 默认值会把所有评审都误判超时；
-    - ``model.strip()`` 兜底脏数据（早期落库的 LLM 配置 model 字段可能带空格）。
+    - ``model.strip()`` 兜底脏数据（早期落库的 LLM 配置 model 字段可能带空格）；
+    - ``safe_max_tokens(..., MAX_TOKENS_REVIEW=8192)``：评审 JSON 实际只需
+      ~3K tokens，用户却常把 ``max_tokens`` 配成上下文窗口大小（32K / 200K），
+      被 Volcengine ARK 这类供应商以 ``InvalidParameter: max_tokens above
+      maximum`` 直接 400 拒掉。统一 clamp 到 8K 既够输出又不会被拒。
     """
     client = build_client(
         config.provider, api_key, config.base_url,
@@ -166,7 +175,7 @@ async def _call_llm_review(
                 {"role": "user", "content": build_review_user_prompt(filename, content_text)},
             ],
             temperature=0.3,
-            max_tokens=config.max_tokens or 4096,
+            max_tokens=safe_max_tokens(config.max_tokens, MAX_TOKENS_REVIEW),
         )
         raw = response.choices[0].message.content or ""
         return _parse_review_json(raw)

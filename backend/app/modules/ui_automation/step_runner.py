@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from app.modules.llm.agent_tools import run_tool as _default_run_tool
-from app.modules.llm.providers import stream_chat
+from app.modules.llm.providers import MAX_TOKENS_LONG, safe_max_tokens, stream_chat
 from app.modules.ui_automation.data_platform_tools import (
     platform_tools_openai_schemas,
     redact_tool_result_for_reasoning,
@@ -178,7 +178,8 @@ async def default_chat_round(
             api_key=llm.api_key,
             base_url=llm.base_url,
             temperature=llm.temperature,
-            max_tokens=llm.max_tokens,
+            # 8K cap：见 providers.py MAX_TOKENS_LONG 注释；防 32K+ 配置触发 400。
+            max_tokens=safe_max_tokens(llm.max_tokens, MAX_TOKENS_LONG),
             tools=tools,
             tool_choice=tool_choice,
         ):

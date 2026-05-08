@@ -31,7 +31,7 @@ from app.modules.llm.prompts.testcase_gen import (
     TESTCASE_GEN_SYSTEM_PROMPT,
     build_testcase_gen_user_prompt,
 )
-from app.modules.llm.providers import build_client
+from app.modules.llm.providers import MAX_TOKENS_LONG, build_client, safe_max_tokens
 from app.modules.requirements.models import RequirementDocument
 from app.modules.testcases.models import (
     AIGenerationBatch,
@@ -208,7 +208,9 @@ async def run_generation_batch(batch_id: uuid.UUID) -> None:
                         )},
                     ],
                     temperature=0.4,
-                    max_tokens=config.max_tokens or 8192,
+                    # 8K 兜底 cap：见 providers.py MAX_TOKENS_LONG 注释；
+                    # 防 32K+ 配置被 Volcengine 等供应商以 InvalidParameter 拒掉。
+                    max_tokens=safe_max_tokens(config.max_tokens, MAX_TOKENS_LONG),
                     stream=True,
                 )
                 async for chunk in llm_stream:
