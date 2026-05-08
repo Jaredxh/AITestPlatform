@@ -87,6 +87,19 @@ services:
       # chromium 在 Xvfb 跑、但不暴露 VNC 端口）。
       UI_NOVNC_ENABLED: ${UI_NOVNC_ENABLED:-true}
       UI_NOVNC_PORT: ${UI_NOVNC_PORT:-6080}
+      # ── 三期 ``run_skill_script`` 子进程资源闸（可调，env 覆盖）────────────
+      # ⚠️ 这五条**必须**在 compose ``environment:`` 块显式声明：pydantic-settings
+      # 在容器内只读 OS env，而 ``.env`` 文件并不会被 docker 自动塞进容器进程。
+      # 不写这一段则 .env 改了五个 SKILL_SCRIPT_* 也是无效的。
+      #
+      # 默认值要能撑过 ``npx clawhub install`` / ``npm install`` / ``pip install``
+      # 这种 OpenClaw 风格的"自启动安装"流程。详细推导见 ``app/config.py``
+      # 内同名字段注释。
+      SKILL_SCRIPT_TIMEOUT_S: ${SKILL_SCRIPT_TIMEOUT_S:-90}
+      SKILL_SCRIPT_RLIMIT_CPU_S: ${SKILL_SCRIPT_RLIMIT_CPU_S:-60}
+      SKILL_SCRIPT_RLIMIT_AS_MB: ${SKILL_SCRIPT_RLIMIT_AS_MB:-2048}
+      SKILL_SCRIPT_RLIMIT_FSIZE_MB: ${SKILL_SCRIPT_RLIMIT_FSIZE_MB:-256}
+      SKILL_SCRIPT_NODE_MAX_OLD_SPACE_MB: ${SKILL_SCRIPT_NODE_MAX_OLD_SPACE_MB:-1024}
     ports:
       # 宿主机端口可配置（容器内 uvicorn 监听 8000 不变）
       # 改方法：在 .env 写 BACKEND_PORT=7008（避免与服务器其它服务冲突）

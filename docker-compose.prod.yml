@@ -77,6 +77,15 @@ services:
       # noVNC 实时画面
       UI_NOVNC_ENABLED: ${UI_NOVNC_ENABLED:-true}
       UI_NOVNC_PORT: ${UI_NOVNC_PORT:-6080}
+      # ── 三期 ``run_skill_script`` 子进程资源闸（与 docker-compose.yml 保持一致）──
+      # ⚠️ 必须显式声明：pydantic-settings 在容器内只读 OS env，``.env`` 文件
+      # 不会被 docker 自动注入到容器进程。不写则 .env 改了也无效。
+      # 默认值能撑过 ``npx/npm/pip install`` 这种 OpenClaw 风格自启动安装。
+      SKILL_SCRIPT_TIMEOUT_S: ${SKILL_SCRIPT_TIMEOUT_S:-90}
+      SKILL_SCRIPT_RLIMIT_CPU_S: ${SKILL_SCRIPT_RLIMIT_CPU_S:-60}
+      SKILL_SCRIPT_RLIMIT_AS_MB: ${SKILL_SCRIPT_RLIMIT_AS_MB:-2048}
+      SKILL_SCRIPT_RLIMIT_FSIZE_MB: ${SKILL_SCRIPT_RLIMIT_FSIZE_MB:-256}
+      SKILL_SCRIPT_NODE_MAX_OLD_SPACE_MB: ${SKILL_SCRIPT_NODE_MAX_OLD_SPACE_MB:-1024}
     ports:
       # 宿主机端口可配置（容器内 uvicorn 监听 8000 不变）
       # 改方法：在 .env 写 BACKEND_PORT=7008（避免与服务器其它服务冲突）
