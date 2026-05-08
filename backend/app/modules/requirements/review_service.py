@@ -14,7 +14,7 @@ from app.core.exceptions import AppException, NotFoundException
 from app.modules.auth.models import User
 from app.modules.llm.models import LLMConfig
 from app.modules.llm.prompts.review import REVIEW_SYSTEM_PROMPT, build_review_user_prompt
-from app.modules.llm.providers import build_client
+from app.modules.llm.providers import LLM_NON_STREAM_TIMEOUT, build_client
 from app.modules.requirements.models import AIReview, RequirementDocument
 from app.modules.requirements.schemas import ReviewListResponse, ReviewResponse
 
@@ -39,6 +39,7 @@ def _to_review_response(review: AIReview) -> ReviewResponse:
         issues=review.issues,
         summary=review.summary,
         review_time_ms=review.review_time_ms,
+        raw_response=review.raw_response,
         created_at=review.created_at,
         updated_at=review.updated_at,
     )
@@ -97,7 +98,9 @@ async def trigger_review(
     except Exception as e:
         logger.exception("AI review failed for document %s", document_id)
         review.status = "failed"
-        review.raw_response = str(e)
+        # 含类型 + message，给前端 toast 一条人可读的错；纯 ``str(e)`` 对
+        # ``httpx.ReadTimeout`` / ``APIConnectionError`` 这类异常常常是空字符串。
+        review.raw_response = f"{type(e).__name__}: {e}"
     finally:
         review.review_time_ms = _now_ms() - start_ms
 
@@ -145,10 +148,19 @@ async def _call_llm_review(
     filename: str,
     content_text: str,
 ) -> dict:
-    client = build_client(config.provider, api_key, config.base_url)
+    """调用 LLM 做需求文档评审。
+
+    - 非流式调用，沿用 ``LLM_NON_STREAM_TIMEOUT``（180s）：30K 字符评审
+      生成完整 JSON 常 30~120s，原 45s read 默认值会把所有评审都误判超时；
+    - ``model.strip()`` 兜底脏数据（早期落库的 LLM 配置 model 字段可能带空格）。
+    """
+    client = build_client(
+        config.provider, api_key, config.base_url,
+        timeout=LLM_NON_STREAM_TIMEOUT,
+    )
     try:
         response = await client.chat.completions.create(
-            model=config.model,
+            model=(config.model or "").strip(),
             messages=[
                 {"role": "system", "content": REVIEW_SYSTEM_PROMPT},
                 {"role": "user", "content": build_review_user_prompt(filename, content_text)},

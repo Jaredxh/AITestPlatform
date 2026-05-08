@@ -283,8 +283,12 @@ class ExecutionCreateRequest(BaseModel):
     __test__ = False
 
     testcase_ids: list[uuid.UUID] = Field(
-        ..., min_length=1, max_length=200,
-        description="本次执行的用例 ID 列表，按本数组顺序跑",
+        default_factory=list,
+        max_length=200,
+        description=(
+            "本次执行的用例 ID 列表，按本数组顺序跑；与 ``plan_id`` 互斥——"
+            "传 ``plan_id`` 时由后端按缓存 plan 还原 testcase_ids，前端不必传。"
+        ),
     )
     environment_id: uuid.UUID | None = Field(
         None,
@@ -319,6 +323,32 @@ class ExecutionCreateRequest(BaseModel):
             "（``/admin/users``）或完整 URL（``https://other.example.com/x``）。"
             "传空串等同于'本次跑该模块时不带 entry_path'，让 AI 直接用 base_url。"
             "未列出的模块沿用 module.entry_path（即数据库里配的）。"
+        ),
+    )
+    # ─── Phase 13 / Task 13.3 — chat 派发 / plan_id 还原 ────────────────────
+    plan_id: uuid.UUID | None = Field(
+        None,
+        description=(
+            "Phase 13：由 ``system__ui_automation__propose_execution_plan`` 缓存"
+            "的 plan id；传此字段时 service 用 plan 还原 testcase_ids / "
+            "environment_id / llm_config_id，无需前端再送 testcase_ids。"
+            "TTL 10 分钟，过期返回 410。"
+        ),
+    )
+    source: str | None = Field(
+        None,
+        pattern=r"^(catalog|chat|adhoc)$",
+        description=(
+            "Phase 13：派发来源；``catalog`` = ExecuteDialog，``chat`` = AI 对话"
+            "ConfirmationCard，``adhoc`` = M2 即席执行。落 ``ui_executions.source``"
+            "用于历史筛选 + 防 adhoc 污染概览统计。不传走默认 ``catalog``。"
+        ),
+    )
+    triggered_chat_session_id: uuid.UUID | None = Field(
+        None,
+        description=(
+            "Phase 13：由 chat 派发时的会话 id；执行完成时 SystemEventService 据"
+            "此把 ``execution_event`` 系统消息回流到该会话末尾。"
         ),
     )
 

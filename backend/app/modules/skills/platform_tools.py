@@ -32,6 +32,15 @@ class ChatPlatformRuntime:
     project_id: uuid.UUID
     llm_config_id: uuid.UUID | None
     assistant_message_id: uuid.UUID | None
+    #: Phase 13 / Task 13.2 — 当前 chat session id（chat_context 注入路径）。
+    #: 仅在 chat 入口挂载；老路径（直接调 platform tool）一律 None，对老逻辑透明。
+    session_id: uuid.UUID | None = None
+    #: Phase 13 / Task 13.2 — 当前会话上下文（``ChatSession.chat_context`` 浅拷贝）。
+    #: env_priority Layer 2 据此读"上次 confirm 过的 environment_id"。
+    chat_context: dict | None = None
+    #: Phase 13 / Task 13.2 — 本轮用户原始消息（不含 system / assistant）。
+    #: env_priority Layer 1 据此抽"用 staging 跑"等显式提及。
+    user_message: str | None = None
 
 
 _rt_var: ContextVar[ChatPlatformRuntime | None] = ContextVar(
@@ -51,8 +60,18 @@ async def chat_platform_runtime_cm(
     project_id: uuid.UUID | None,
     llm_config_id: uuid.UUID | None,
     assistant_message_id: uuid.UUID | None,
+    *,
+    session_id: uuid.UUID | None = None,
+    chat_context: dict | None = None,
+    user_message: str | None = None,
 ):
-    """在单次 chat agent 循环内挂载 platform 工具运行时。"""
+    """在单次 chat agent 循环内挂载 platform 工具运行时。
+
+    Phase 13 / Task 13.2 增量：``session_id`` / ``chat_context`` /
+    ``user_message`` 全部可选，老调用方（test fixtures、其它 platform tool 直
+    调路径）不传也能跑——env_priority 的 Layer 1 / Layer 2 会跳过解析回退到下
+    一层，行为与 Phase 12 等价。
+    """
     if project_id is None:
         yield
         return
@@ -63,6 +82,9 @@ async def chat_platform_runtime_cm(
         project_id=project_id,
         llm_config_id=llm_config_id,
         assistant_message_id=assistant_message_id,
+        session_id=session_id,
+        chat_context=chat_context,
+        user_message=user_message,
     )
     token = _rt_var.set(rt)
     try:

@@ -14,7 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.skills.models import Skill, SkillSafetyScan, SkillVersion
 from app.modules.skills.safety_scanner import SafetyScanner
 
-SYSTEM_SKILLS_VERSION = "1.0"
+#: Phase 13 / Task 13.1：内置 SKILL 文案 + tools_required 升级到 ConfirmationCard
+#: 协议；版本号变更触发 ``sync_built_in_skills`` 幂等重写已有项目的
+#: ``system_ui_automation`` skill。
+SYSTEM_SKILLS_VERSION = "2.0"
 
 _EXPECTED_SLUGS = frozenset({
     "system_ui_automation",
@@ -36,19 +39,37 @@ class _BuiltinSpec:
     extra_metadata: dict
 
 
-_BODY_UI = """# UI 自动化（内置）
+_BODY_UI = """# UI 自动化（内置 · Phase 13）
 
-通过 platform_* 工具检索当前项目用例与环境，并启动二期 UI ExecutionEngine。
+通过 ``system__ui_automation__*`` 工具集驱动 UI 自动化执行。LLM **不能**
+直接派发执行——只能生成 ConfirmationCard，由用户在前端确认后由专门 API
+触发（设计文档 §10.3.3）。
 
 ## 何时使用
 
-用户提到「跑 UI 测试」「跑用例」「自动化测试」「执行 UI 用例」或类似意图时使用。
+用户明确表达执行意图时（"跑 UI 测试"/"跑用例"/"帮我跑 xxx 流程"/"执行
+#编号"等）。**询问历史 / 通过率 / 怎么写用例**等查询/学习意图不要使用本
+技能（NLU IntentClassifier 会自动剔除候选）。
 
-## 执行顺序建议
+## 安全约束
 
-1. 如需澄清目标，先 ``platform_search_testcases``。
-2. 用 ``platform_list_environments`` 确认环境。
-3. 最后 ``platform_run_ui_execution`` 批量启动执行。
+- **永远不要**调用 ``platform_run_ui_execution`` / ``run_ui_test``：这些
+  tool 不在你的工具集中，调用会被服务端拒绝。
+- 只能通过 ``system__ui_automation__propose_execution_plan`` 生成
+  ConfirmationCard；用户点"确认执行"后由前端走专门 API 派发。
+- 高风险环境（``risk_level=high``）必须走 ``confirmation_strength=strict``
+  二次确认（用户输入挑战短语）。
+
+## 标准执行顺序
+
+1. ``system__ui_automation__search_test_cases``：找用例（支持 #编号 / 标题
+   模糊匹配）。
+2. ``system__ui_automation__list_environments``：列项目可用环境（含启发式
+   ``risk_level``，AI 应优先选 low 风险环境作为默认值）。
+3. ``system__ui_automation__list_test_data_sets``（可选）：物料默认值不确定
+   或用户提"用 alice 跑"时调。
+4. ``system__ui_automation__propose_execution_plan``：装配 ConfirmationCard
+   payload，返回 ``plan_id`` + 完整结构。前端会渲染卡片让用户确认。
 """
 
 _BODY_REVIEW = """# 需求评审（兼容占位）
@@ -77,13 +98,29 @@ BUILTIN_SPECS: tuple[_BuiltinSpec, ...] = (
     _BuiltinSpec(
         name="内置 · UI 自动化",
         slug="system_ui_automation",
-        description="对话内检索用例与环境并启动 UI 自动化执行（platform_*）。",
+        description=(
+            "Agent 化 UI 自动化：搜用例 → 选环境 → 预览物料 → 生成 "
+            "ConfirmationCard 由用户确认派发。LLM 不能直接执行（run_ui_test 不暴露）。"
+        ),
         body=_BODY_UI,
-        triggers=["跑 UI 测试", "跑用例", "自动化测试", "执行 UI 用例"],
+        triggers=[
+            "跑 UI 测试",
+            "跑用例",
+            "自动化测试",
+            "执行 UI 用例",
+            "帮我跑",
+            "跑下登录",
+        ],
+        # Phase 13 / Task 13.1：tools_required 改用 4 个 system__ui_automation__*
+        # 工具；platform_run_ui_execution 已被 LLM_FORBIDDEN_PLATFORM_TOOLS 黑名单，
+        # 即使写了也不会暴露给 LLM。这里**显式不写**，强调"内置 skill 不依赖
+        # 直接派发 tool"的设计意图。保留 platform_search_testcases /
+        # platform_list_environments 给老 SKILL 链路（部分 e2e 仍可能用）。
         tools_required=[
-            "platform_run_ui_execution",
-            "platform_search_testcases",
-            "platform_list_environments",
+            "system__ui_automation__search_test_cases",
+            "system__ui_automation__list_environments",
+            "system__ui_automation__list_test_data_sets",
+            "system__ui_automation__propose_execution_plan",
         ],
         activation_mode="agent_callable",
         category="system",

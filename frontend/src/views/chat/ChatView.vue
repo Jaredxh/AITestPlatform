@@ -25,12 +25,29 @@
       <div class="chat-view__messages">
         <skill-activation-hint :event="chat.latestSkillActivation.value" />
 
+        <!-- Phase 13 / Task 13.3 — 离线回来汇总卡 -->
+        <div
+          v-if="chat.pendingSummary.value && chat.pendingSummary.value.count > 0"
+          class="chat-view__pending"
+          @click="dismissPendingSummary"
+          :title="'点击关闭提示'"
+        >
+          <span class="i-carbon-bell text-amber-500" />
+          <span>
+            你离开期间完成 {{ chat.pendingSummary.value.count }} 个任务，已追加到下方对话末尾
+          </span>
+          <button class="chat-view__pending-close" type="button">×</button>
+        </div>
+
         <message-list
           ref="messageListRef"
           :messages="chat.messages.value"
           :streaming="chat.streaming.value"
           :is-streaming="chat.isStreaming.value"
           :loading="chat.isLoadingMessages.value"
+          @plan-confirm="handlePlanConfirm"
+          @plan-cancel="handlePlanCancel"
+          @task-badge-patch="handleTaskBadgePatch"
         />
       </div>
 
@@ -51,8 +68,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch } from "vue";
+import { ref, onMounted, onBeforeUnmount, watch } from "vue";
 import { useChat } from "@/composables/useChat";
+import type {
+  ExecutionPlanCard,
+  TaskBadgeMeta,
+} from "@/components/skills/types";
 // 历史保留：``useSkillSelection`` / ``activate-manual`` 接口仍存在，但 chat
 // header 已不再暴露"手动多选 skill"按钮——技能激活完全交由 SkillRouter
 // 自动 (always / trigger / agent_callable) 决定，避免普通用户误以为必须先
@@ -170,6 +191,51 @@ async function handleSend(text: string) {
   await chat.sendMessage(text, selectedConfigId.value || undefined);
 }
 
+// ─── Phase 13 / Task 13.3 — ConfirmationCard / TaskBadge 事件回调 ──────
+
+function handlePlanConfirm(payload: {
+  messageId: string;
+  taskId: string;
+  plan: ExecutionPlanCard;
+}) {
+  const sid = chat.currentSessionId.value;
+  if (!sid) return;
+  chat.applyPlanConfirmation(sid, payload);
+}
+
+function handlePlanCancel(messageId: string) {
+  const sid = chat.currentSessionId.value;
+  if (!sid) return;
+  chat.applyPlanCancel(sid, messageId);
+}
+
+function handleTaskBadgePatch(payload: {
+  messageId: string;
+  patch: Partial<TaskBadgeMeta>;
+}) {
+  const sid = chat.currentSessionId.value;
+  if (!sid) return;
+  chat.applyTaskBadgePatchByMessage(sid, payload.messageId, payload.patch);
+}
+
+function dismissPendingSummary() {
+  chat.clearPendingSummary();
+}
+
+watch(
+  () => chat.currentSessionId.value,
+  async (newId, oldId) => {
+    if (oldId) chat.unsubscribeSystemEvents(oldId);
+    if (newId) {
+      // 切到新 session：订阅 SSE + 加载离线汇总 + 把所有非终态 TaskBadge
+      // 拉一次最新态（防止重连漏过 task_status）。
+      chat.subscribeSystemEvents(newId);
+      await chat.loadPendingSummary(newId);
+      await chat.refreshTaskBadgesForSession(newId);
+    }
+  },
+);
+
 watch(
   () => projectStore.currentProjectId,
   () => {
@@ -182,6 +248,13 @@ onMounted(() => {
   fetchConfigs();
   fetchChatPrompts();
   chat.loadSessions(projectStore.currentProjectId || undefined);
+});
+
+onBeforeUnmount(() => {
+  // 离开 ChatView 时主动断开所有 system-events SSE，避免后台 zombie 连接。
+  for (const s of chat.sessions.value) {
+    chat.unsubscribeSystemEvents(s.id);
+  }
 });
 </script>
 
@@ -232,5 +305,30 @@ onMounted(() => {
   background: var(--bg-card);
   position: relative;
   z-index: 1;
+}
+
+/* Phase 13 / Task 13.3 — 离线回来汇总卡（顶部黄色 banner） */
+.chat-view__pending {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px auto 0;
+  padding: 6px 14px;
+  font-size: 12px;
+  background: color-mix(in srgb, var(--brand-warning, #f0a020) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand-warning, #f0a020) 30%, transparent);
+  border-radius: 8px;
+  color: var(--text-primary);
+  max-width: 920px;
+  cursor: pointer;
+}
+.chat-view__pending-close {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--text-tertiary);
+  cursor: pointer;
 }
 </style>

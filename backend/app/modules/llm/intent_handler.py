@@ -139,7 +139,7 @@ def format_review_result(review_data: dict) -> str:
     issues = review_data.get("issues", [])
 
     lines = [
-        f"## 📋 需求评审结果\n",
+        "## 📋 需求评审结果\n",
         f"**综合评分：{score} / 100**\n",
         f"### 总体评价\n{summary}\n",
     ]
@@ -180,7 +180,7 @@ def format_review_result(review_data: dict) -> str:
 def format_generation_result(testcases: list[dict], batch_id: str) -> str:
     """Format generated testcases as a markdown message."""
     lines = [
-        f"## 🧪 AI 生成测试用例\n",
+        "## 🧪 AI 生成测试用例\n",
         f"共生成 **{len(testcases)}** 条用例（批次 ID: `{batch_id[:8]}...`）\n",
     ]
 

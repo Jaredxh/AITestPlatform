@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -11,6 +12,17 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.llm.models import ChatSession
+from app.modules.skills.builtin.ui_automation.intent_classifier import (
+    UI_AUTOMATION_INTENT_GUARDED,
+    LLMClassifierCallable,
+)
+from app.modules.skills.builtin.ui_automation.intent_classifier import (
+    classify as classify_intent,
+)
+from app.modules.skills.builtin.ui_automation.tools import (
+    UI_AUTOMATION_TOOL_NAMES,
+    ui_automation_chat_openai_schemas,
+)
 from app.modules.skills.http_tools import (
     extract_allowed_hosts_from_body,
     http_tool_schemas,
@@ -25,6 +37,31 @@ from app.modules.skills.service import (
     list_always_skills as _fetch_always_skills,
 )
 from app.modules.skills.triggers import match_triggers
+
+logger = logging.getLogger(__name__)
+
+
+#: Phase 13 / Task 13.1 — LLM 安全黑名单。
+#:
+#: 设计依据：``docs/PHASE3_DESIGN.md §10.3.3 / §10.7``。``platform_run_ui_execution``
+#: 等价于"run_ui_test"——直接派发 UI 自动化执行；**永远**不能暴露给 LLM。
+#: LLM 想触发执行只能调 ``system__ui_automation__propose_execution_plan`` 生成
+#: ConfirmationCard，由用户在前端"确认执行"按钮触发专门 API 派发。
+#:
+#: 即使内置 SKILL.md 历史 ``tools_required`` 写了它（Phase 12 老配置兼容），
+#: ``_append_platform_candidate_tools`` 与 ``_collect_platform_names`` 都会把
+#: 它主动剔除；``safe_invoke.safe_run_tool`` 也会在执行层做第二道闸拒绝。
+LLM_FORBIDDEN_PLATFORM_TOOLS: frozenset[str] = frozenset({
+    "platform_run_ui_execution",
+})
+
+
+#: Phase 13 / Task 13.1 — 与 ``system_ui_automation`` 内置 skill 绑定的 4 个
+#: ``system__ui_automation__*`` agent tool 名集合。这些 tool **不是**
+#: ``platform_*`` 命名空间，由 ``ensure_ui_automation_tools_registered`` 注册到
+#: ``TOOL_REGISTRY``，安全闸门走 ``safe_invoke`` 的 system_ui_automation slug
+#: 校验（见 §10.7）。
+SYSTEM_UI_AUTOMATION_TOOL_NAMES: frozenset[str] = frozenset(UI_AUTOMATION_TOOL_NAMES)
 
 
 def _invoke_tool_name(slug: str) -> str:
@@ -75,8 +112,14 @@ def _dedupe_skills(skills: list[Skill], max_total: int) -> list[Skill]:
 def _collect_platform_names(skill: Skill) -> set[str]:
     names: set[str] = set()
     for t in skill.tools_required or []:
-        if isinstance(t, str) and t.startswith("platform_"):
-            names.add(t)
+        if not isinstance(t, str) or not t.startswith("platform_"):
+            continue
+        # Phase 13 / Task 13.1 — 黑名单 platform_run_ui_execution：即使 SKILL.md
+        # 历史 tools_required 仍写了它，也不放进 allowed_platform_tools，
+        # safe_invoke 第二道闸据此拒绝执行。
+        if t in LLM_FORBIDDEN_PLATFORM_TOOLS:
+            continue
+        names.add(t)
     return names
 
 
@@ -85,17 +128,40 @@ def _append_platform_candidate_tools(
     cand_tools: list[dict[str, Any]],
     cand_tool_names: set[str],
 ) -> None:
-    """第一道闸：仅 ``system_*`` slug 暴露 platform_* OpenAI specs。"""
+    """第一道闸：仅 ``system_*`` slug 暴露 platform_* OpenAI specs。
+
+    Phase 13 / Task 13.1：``platform_run_ui_execution`` 永远不放进 LLM tool
+    list（屏蔽于 ``LLM_FORBIDDEN_PLATFORM_TOOLS``），无论 SKILL.md 是否声明。
+    """
     if not skill.slug.startswith("system_"):
         return
     specs = _platform_specs()
     for tname in skill.tools_required or []:
         if not isinstance(tname, str) or not tname.startswith("platform_"):
             continue
+        if tname in LLM_FORBIDDEN_PLATFORM_TOOLS:
+            continue
         spec = specs.get(tname)
         if spec is None:
             continue
         fname = spec["function"]["name"]
+        if fname in cand_tool_names:
+            continue
+        cand_tools.append(spec)
+        cand_tool_names.add(fname)
+
+
+def _append_ui_automation_candidate_tools(
+    cand_tools: list[dict[str, Any]],
+    cand_tool_names: set[str],
+) -> None:
+    """``system_ui_automation`` 激活时把 4 个 ``system__ui_automation__*`` tool 加入
+    LLM 工具集（Phase 13 / Task 13.1）。
+
+    与 ``platform_*`` 不同，这 4 个 tool 由本期独立实现（task 13.1 stub /
+    task 13.2 升级智能匹配）；幂等，重复 append 同名 spec 自动去重。
+    """
+    for fname, spec in ui_automation_chat_openai_schemas().items():
         if fname in cand_tool_names:
             continue
         cand_tools.append(spec)
@@ -278,13 +344,32 @@ async def _list_agent_callable(db: AsyncSession, project_id: uuid.UUID) -> list[
     return await list_agent_callable_skills(db, project_id, limit=5)
 
 
+#: Phase 13 / Task 13.0 — ui_automation 二段式 NLU 校验阈值。低于此值的
+#: ``execute_test`` 视为"不够明确"，候选剔除让 LLM 走普通问答（设计文档
+#: §10.0.4：纯名词"登录用例"/conf=0.55 时让 AI 反问而不是直接执行）。
+_UI_AUTOMATION_MIN_INTENT_CONFIDENCE = 0.7
+
+
 async def compose(
     db: AsyncSession,
     project_id: uuid.UUID | None,
     session: ChatSession,
     user_message: str,
+    *,
+    intent_llm_classifier: LLMClassifierCallable | None = None,
 ) -> SkillContext:
-    """三层激活：always → manual → 触发词 + agent_callable 候选工具。"""
+    """三层激活：always → manual → 触发词 + agent_callable 候选工具。
+
+    Phase 13 / Task 13.0：在三层组装末尾对 ``UI_AUTOMATION_INTENT_GUARDED``
+    内的 skill 单独跑一次 NLU；意图非 ``execute_test`` 或置信度不够时把这些
+    候选从 ``candidate_tools`` / ``activated_skills`` 剔除，避免"昨天跑用例
+    失败率"被关键词召回误触发。
+
+    ``intent_llm_classifier`` 为可选参数：调用方可注入"接收 prompt 返回 JSON
+    字符串"的 awaitable 给 IntentClassifier Layer 2 兑底；不传时只跑 Layer 1
+    规则——M1 task 13.0 阶段的 DoD 全部反例靠规则即可命中，故 chat_service
+    主调用点目前不传，保持热路径零额外 LLM 延迟。
+    """
     if project_id is None:
         return SkillContext()
 
@@ -346,6 +431,39 @@ async def compose(
     agent_pool = await _list_agent_callable(db, project_id)
     candidates = _dedupe_skills(triggered + agent_pool, max_total=5)
 
+    # Phase 13 / Task 13.0 — ui_automation 二段式 NLU 校验。
+    #
+    # 设计依据：``docs/PHASE3_DESIGN.md §10.0.3``。仅在候选池含
+    # ``UI_AUTOMATION_INTENT_GUARDED`` 内 skill 时跑一次 classify；意图非
+    # ``execute_test`` 或置信度 < 0.7 → 把这些 skill 从 candidates 剔除，避免
+    # "昨天跑用例失败率"被"跑/用例"关键词召回误触发执行。
+    #
+    # 注意：剔除范围**只是 trigger / agent_callable 这一层候选**；always /
+    # manual 主动激活的同 slug skill 不受影响（用户明确选择优先于 NLU）。
+    ui_guarded_in_candidates = [
+        s for s in candidates if s.slug in UI_AUTOMATION_INTENT_GUARDED
+    ]
+    if ui_guarded_in_candidates:
+        intent = await classify_intent(
+            user_message,
+            session_id=getattr(session, "id", None),
+            llm_classifier=intent_llm_classifier,
+        )
+        guarded_passes = (
+            intent.action == "execute_test"
+            and intent.confidence >= _UI_AUTOMATION_MIN_INTENT_CONFIDENCE
+        )
+        if not guarded_passes:
+            dropped_slugs = [s.slug for s in ui_guarded_in_candidates]
+            candidates = [
+                s for s in candidates if s.slug not in UI_AUTOMATION_INTENT_GUARDED
+            ]
+            triggered_ids = {s.id for s in candidates if s.id in triggered_ids}
+            logger.info(
+                "ui_automation candidates dropped: intent=%s conf=%.2f slugs=%s",
+                intent.action, intent.confidence, dropped_slugs,
+            )
+
     for s in candidates:
         spec = _build_skill_invoke_tool(s)
         fname = spec["function"]["name"]
@@ -370,6 +488,15 @@ async def compose(
                     matched_trigger=matched_str,
                 ),
             )
+
+    # ── system_ui_automation 4 个 system__ui_automation__* 专属工具 ──
+    #
+    # Phase 13 / Task 13.1：只要本轮 always / manual / trigger / agent_callable
+    # 任意层激活了 ``system_ui_automation`` slug，就把 4 个 system__ui_automation__*
+    # tool 加入 LLM tool 列表。这些 tool 不走 platform_* 命名空间，是 ui_automation
+    # skill 的私有工具集（设计文档 §10.7 Tool 工具集）；``run_ui_test`` 不在其中。
+    if "system_ui_automation" in active_slugs:
+        _append_ui_automation_candidate_tools(cand_tools, cand_tool_names)
 
     # ── http_get_json / http_post_json 自动暴露 ──
     # 只要本轮存在任何 candidate skill 含有 http(s) URL，就把通用 http 工具放

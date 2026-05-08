@@ -26,11 +26,21 @@ PROVIDER_BASE_URLS: dict[str, str] = {
 # 转成前端一条可读 error，避免把 DB 连接、后台 task 一起拖到 10 分钟。
 LLM_STREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=45.0, write=60.0, pool=60.0)
 
+# 非流式调用（需求评审 / 用例生成的小 plan / web-search rewrite）的总超时。
+# 与 ``LLM_STREAM_TIMEOUT`` 不同：非流式下服务端要把整个回复生成完才一次性
+# 推回字节流，``read`` 期间长时间无字节是**正常**的——而不是流式那种半开。
+# 30K 字符评审 + JSON 全量输出（5 维度 + N 个 issue）整体生成时间常 ~30~120s，
+# 沿用 45s read 会把所有评审都误判成超时，所以这里把全部 phase 都拉到 180s。
+LLM_NON_STREAM_TIMEOUT = httpx.Timeout(
+    connect=10.0, read=180.0, write=60.0, pool=180.0
+)
+
 
 def build_client(
     provider: str,
     api_key: str | None = None,
     base_url: str | None = None,
+    timeout: httpx.Timeout | float | None = None,
 ) -> AsyncOpenAI:
     """构造 OpenAI-compat 客户端。
 
@@ -41,6 +51,9 @@ def build_client(
     显式禁用 SDK 自动重试（``max_retries=0``）：上层 ``_handle_chat_stream``
     已经实现了"每轮 round + finalize"的 UX，SDK 默认 2 次静默重试只会把
     "token-by-token 卡住"放大到 1.5 分钟以上才报错。
+
+    ``timeout`` 留空时默认 ``LLM_STREAM_TIMEOUT``（流式语义）；非流式调用方
+    应显式传 ``LLM_NON_STREAM_TIMEOUT`` 覆盖，以免被 45s read 假性超时。
     """
     resolved_base = base_url or PROVIDER_BASE_URLS.get(provider)
     if api_key:
@@ -56,7 +69,7 @@ def build_client(
     return AsyncOpenAI(
         api_key=resolved_key,
         base_url=resolved_base,
-        timeout=LLM_STREAM_TIMEOUT,
+        timeout=timeout if timeout is not None else LLM_STREAM_TIMEOUT,
         max_retries=0,
     )
 
@@ -67,12 +80,20 @@ async def test_connection(
     api_key: str | None = None,
     base_url: str | None = None,
 ) -> dict:
-    """发送一个轻量请求测试 LLM 连通性，返回结果摘要。"""
-    client = build_client(provider, api_key, base_url)
+    """发送一个轻量请求测试 LLM 连通性，返回结果摘要。
+
+    与 ``stream_chat`` / ``complete_chat`` 对齐：模型名先 ``.strip()``，避免
+    用户在前端表单里手抖多敲了空格 / 复制黏贴带前后空白时，测试连接因
+    "model not found" 失败而误以为是 base_url / api_key 配错。
+    """
+    # 测试连接是非流式调用（max_tokens=10），用 NON_STREAM 长 timeout 兜底；
+    # 实际正常都 1~3s 返回，180s 只是给"模型冷启动 + 慢网关"的极端情况留出空间。
+    client = build_client(provider, api_key, base_url, timeout=LLM_NON_STREAM_TIMEOUT)
+    cleaned_model = (model or "").strip()
     start = time.monotonic()
     try:
         response = await client.chat.completions.create(
-            model=model,
+            model=cleaned_model,
             messages=[{"role": "user", "content": "Hi, reply with exactly: ok"}],
             max_tokens=10,
             temperature=0,
@@ -158,7 +179,11 @@ async def complete_chat(
     Used by the web-search agent to let the configured model rewrite the
     user's question into precise search queries before retrieval happens.
     """
-    client = build_client(provider, api_key, base_url)
+    # 非流式：服务端 generation 完成后一次性吐字节流，``read`` 期间长时间
+    # 无字节是正常的（不是 SSE 半开）；用 NON_STREAM_TIMEOUT 防 45s 假性超时。
+    client = build_client(
+        provider, api_key, base_url, timeout=LLM_NON_STREAM_TIMEOUT
+    )
     try:
         response = await client.chat.completions.create(
             model=(model or "").strip(),

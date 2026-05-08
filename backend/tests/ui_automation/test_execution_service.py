@@ -286,6 +286,193 @@ async def test_start_execution_no_environment_in_project(
     assert excinfo.value.code == "NO_ENVIRONMENT"
 
 
+# ─── Phase 13 / Task 13.3 — plan_id 反查路径 ─────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_start_execution_with_plan_id_restores_inputs_from_cache(
+    monkeypatch, patch_engine_and_persistence,
+):
+    """plan_id 路径：start_execution 应从缓存还原 testcase_ids / environment_id /
+    llm_config_id，并把 source='chat' / triggered_chat_session_id 落进 init 行。
+    """
+    project_id = uuid.uuid4()
+    env_id = uuid.uuid4()
+    plan_id = uuid.uuid4()
+    case_a = uuid.uuid4()
+    case_b = uuid.uuid4()
+    chat_session_id = uuid.uuid4()
+    llm_id = uuid.uuid4()
+    user = _make_user()
+
+    # 构造 fake CachedPlan 注入 plan_builder.get_cached_plan
+    from app.modules.skills.builtin.ui_automation.plan_builder import CachedPlan
+    from app.modules.skills.builtin.ui_automation.schemas import (
+        CaseSummary,
+        ConfirmationStrength,
+        EnvironmentSummary,
+        EnvRiskLevel,
+        ExecutionPlanCard,
+        LLMProviderSummary,
+        TestDataPreview,
+    )
+
+    plan_card = ExecutionPlanCard(
+        plan_id=plan_id,
+        project_id=project_id,
+        cases=[
+            CaseSummary(id=case_a, case_no=1, title="A", priority="high", status="active"),
+            CaseSummary(id=case_b, case_no=2, title="B", priority="medium", status="active"),
+        ],
+        environment=EnvironmentSummary(
+            id=env_id, name="dev", base_url="https://dev.example.com",
+            risk_level=EnvRiskLevel.LOW, risk_reason="",
+        ),
+        llm_provider=LLMProviderSummary(id=llm_id, name="X", provider="x", model="m"),
+        test_data_preview=TestDataPreview(),
+        estimated_duration_seconds=120,
+        confirmation_strength=ConfirmationStrength.SOFT,
+        confirmation_payload={},
+        runtime_data_flow=None,
+        expires_at=None,
+    )
+    cached = CachedPlan(
+        plan=plan_card,
+        case_ids=[case_a, case_b],
+        environment_id=env_id,
+        llm_config_id=llm_id,
+        project_id=project_id,
+    )
+
+    async def fake_get_cached_plan(_pid):
+        return cached
+
+    monkeypatch.setattr(
+        "app.modules.skills.builtin.ui_automation.plan_builder.get_cached_plan",
+        fake_get_cached_plan,
+    )
+
+    db = _DBStub()
+    env_row = _make_env_row(project_id=project_id, env_id=env_id)
+    db.objects[(execution_service.TestEnvironment, env_id)] = env_row
+    # _validate_testcase_ownership 一次：返回两个 case id
+    db.execute_results.append(_ResultStub(scalar_list=[case_a, case_b]))
+
+    async def patched_get(model, id_):
+        if model is execution_service.UIExecution:
+            row = _make_execution_row(project_id=project_id)
+            row.id = id_
+            return row
+        return db.objects.get((model, id_))
+
+    db.get = patched_get  # type: ignore[method-assign]
+
+    req = ExecutionCreateRequest(
+        plan_id=plan_id,
+        triggered_chat_session_id=chat_session_id,
+        # 故意不传 testcase_ids（前端确认时也不应送）
+    )
+    item = await execution_service.start_execution(db, project_id, req, user)
+
+    assert item.project_id == project_id
+    assert len(patch_engine_and_persistence.inits) == 1
+    init_args = patch_engine_and_persistence.inits[0]
+    assert init_args["environment_id"] == env_id
+    assert init_args["total_cases"] == 2
+    assert init_args["source"] == "chat"
+    assert init_args["triggered_chat_session_id"] == chat_session_id
+    snap = init_args["config_snapshot"]
+    assert snap["plan_id"] == str(plan_id)
+    assert snap["source"] == "chat"
+
+    import asyncio
+    await asyncio.sleep(0)
+    assert len(patch_engine_and_persistence.engine_runs) == 1
+    inputs = patch_engine_and_persistence.engine_runs[0]
+    assert inputs.testcase_ids == [case_a, case_b]
+    assert inputs.llm_config_id == llm_id
+
+
+@pytest.mark.asyncio
+async def test_start_execution_plan_expired(monkeypatch, patch_engine_and_persistence):
+    project_id = uuid.uuid4()
+    user = _make_user()
+    db = _DBStub()
+
+    async def fake_get_cached_plan(_pid):
+        return None
+
+    monkeypatch.setattr(
+        "app.modules.skills.builtin.ui_automation.plan_builder.get_cached_plan",
+        fake_get_cached_plan,
+    )
+
+    req = ExecutionCreateRequest(
+        plan_id=uuid.uuid4(), triggered_chat_session_id=uuid.uuid4(),
+    )
+    with pytest.raises(AppException) as excinfo:
+        await execution_service.start_execution(db, project_id, req, user)
+    assert excinfo.value.code == "EXEC_PLAN_EXPIRED"
+
+
+@pytest.mark.asyncio
+async def test_start_execution_plan_project_mismatch(
+    monkeypatch, patch_engine_and_persistence,
+):
+    project_id = uuid.uuid4()
+    other_project = uuid.uuid4()
+    user = _make_user()
+    db = _DBStub()
+
+    from app.modules.skills.builtin.ui_automation.plan_builder import CachedPlan
+    from app.modules.skills.builtin.ui_automation.schemas import (
+        ConfirmationStrength,
+        EnvironmentSummary,
+        EnvRiskLevel,
+        ExecutionPlanCard,
+        LLMProviderSummary,
+        TestDataPreview,
+    )
+
+    cached = CachedPlan(
+        plan=ExecutionPlanCard(
+            plan_id=uuid.uuid4(),
+            project_id=other_project,
+            cases=[],
+            environment=EnvironmentSummary(
+                id=uuid.uuid4(), name="dev", base_url="https://dev",
+                risk_level=EnvRiskLevel.LOW, risk_reason="",
+            ),
+            llm_provider=LLMProviderSummary(id=None, name="x", provider="x", model="m"),
+            test_data_preview=TestDataPreview(),
+            estimated_duration_seconds=60,
+            confirmation_strength=ConfirmationStrength.NONE,
+            confirmation_payload={},
+            runtime_data_flow=None,
+            expires_at=None,
+        ),
+        case_ids=[uuid.uuid4()],
+        environment_id=uuid.uuid4(),
+        llm_config_id=None,
+        project_id=other_project,
+    )
+
+    async def fake_get_cached_plan(_pid):
+        return cached
+
+    monkeypatch.setattr(
+        "app.modules.skills.builtin.ui_automation.plan_builder.get_cached_plan",
+        fake_get_cached_plan,
+    )
+
+    req = ExecutionCreateRequest(
+        plan_id=uuid.uuid4(), triggered_chat_session_id=uuid.uuid4(),
+    )
+    with pytest.raises(AppException) as excinfo:
+        await execution_service.start_execution(db, project_id, req, user)
+    assert excinfo.value.code == "EXEC_PLAN_PROJECT_MISMATCH"
+
+
 @pytest.mark.asyncio
 async def test_start_execution_explicit_env_wrong_project(
     monkeypatch, patch_engine_and_persistence,

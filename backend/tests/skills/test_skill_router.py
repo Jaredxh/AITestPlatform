@@ -73,18 +73,33 @@ async def test_system_skill_merges_platform_tools(monkeypatch: pytest.MonkeyPatc
         AsyncMock(return_value=[sys_s]),
     )
 
+    # Task 13.0：``system_ui_automation`` 在 candidate 池里时会跑 NLU 二段式
+    # 校验；user_message 必须命中"execute_test"高置信度才不会被剔除。这条
+    # 测试本意是验证 system_* skill 的 tool 桥接，与 NLU 无关；让
+    # message 同时含动作动词与编号（conf=0.95）即可绕过 guard。
+    #
+    # Task 13.1：``platform_run_ui_execution`` 已被加入 LLM 黑名单；即使
+    # ``tools_required`` 仍写它也不会暴露给 LLM。其它 platform_* tool（如
+    # platform_search_testcases）保留原行为；同时挂上 4 个 system__ui_automation__*
+    # tool。
     ctx = await skill_router.compose(
         AsyncMock(),
         proj,
         ChatSession(project_id=proj, user_id=uuid.uuid4()),
-        "hi",
+        "执行 #123",
     )
     names = {t["function"]["name"] for t in ctx.candidate_tools}
     assert "skill_system_ui_automation__invoke" in names
-    assert "platform_run_ui_execution" in names
     assert "platform_search_testcases" in names
     assert "system_ui_automation" in ctx.active_system_skill_slugs
-    assert "platform_run_ui_execution" in ctx.allowed_platform_tools
+    # ``platform_run_ui_execution`` 永远屏蔽
+    assert "platform_run_ui_execution" not in names
+    assert "platform_run_ui_execution" not in ctx.allowed_platform_tools
+    # 4 个 system__ui_automation__* tool 全部到位
+    assert "system__ui_automation__search_test_cases" in names
+    assert "system__ui_automation__list_environments" in names
+    assert "system__ui_automation__list_test_data_sets" in names
+    assert "system__ui_automation__propose_execution_plan" in names
 
 
 @pytest.mark.asyncio

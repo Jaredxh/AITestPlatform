@@ -1,15 +1,31 @@
 import { ref, computed } from "vue";
 import {
-  getSessionsApi,
+  chatSystemEventsUrl,
   createSessionApi,
-  getSessionDetailApi,
   deleteSessionApi,
+  getPendingTaskSummaryApi,
+  getSessionDetailApi,
+  getSessionsApi,
   startChatTaskApi,
   updateSessionApi,
   uploadFileApi,
 } from "@/services/chat";
-import type { ChatSession, ChatMessage, FileUploadResult } from "@/services/chat";
+import type {
+  ChatMessage,
+  ChatSession,
+  FileUploadResult,
+  PendingTaskSummary,
+} from "@/services/chat";
 import type { SkillActivatedEvent } from "@/services/skills";
+import type {
+  ExecutionPlanCard,
+  TaskBadgeMeta,
+} from "@/components/skills/types";
+import {
+  applyTaskBadgePatch,
+  transformPlanMessageToTaskBadge,
+} from "./useExecutionPlan";
+import { refreshAllTaskBadges } from "./useTaskBadgeAutoRefresh";
 import { useSSE } from "./useSSE";
 
 export interface PendingFile {
@@ -68,6 +84,14 @@ export function useChat() {
 
   /** 每个会话当前的中断句柄；切到别的会话不再 abort，让上一路自然跑完。 */
   const abortHandles: Record<string, () => void> = {};
+
+  // ─── Phase 13 / Task 13.3 — 系统事件流 / pending 汇总 ───────────────────
+  /** 各会话当前的 system-events SSE 中断句柄。 */
+  const systemEventAborts: Record<string, () => void> = {};
+  /** 首屏顶部"你离开期间完成 N 个任务"汇总。null = 未加载 / 不需展示。 */
+  const pendingSummary = ref<PendingTaskSummary | null>(null);
+  /** 顶栏小铃铛未读计数；execution_event 来一条 +1，用户点开列表后清零。 */
+  const unreadEvents = ref(0);
 
   const currentSession = computed(() =>
     sessions.value.find((s) => s.id === currentSessionId.value) ?? null,
@@ -133,6 +157,71 @@ export function useChat() {
       ...messagesBySession.value,
       [sessionId]: list,
     };
+  }
+
+  // ─── Phase 13 / Task 13.3 — message kind 操作 ───────────────────────────
+
+  /**
+   * ConfirmationCard "确认执行"成功后调用：把同一条 skill_card 消息原地变身
+   * 为 task_badge（同 message_id），输入框立即可用，用户能继续聊别的；后台
+   * 任务通过 system-events SSE 增量更新进度，完成时另起一条 execution_event
+   * 在末尾追加。
+   */
+  function applyPlanConfirmation(
+    sessionId: string,
+    payload: {
+      messageId: string;
+      taskId: string;
+      plan: ExecutionPlanCard;
+    },
+  ) {
+    const list = messagesBySession.value[sessionId] || [];
+    const next = transformPlanMessageToTaskBadge(list, payload);
+    _setMessages(sessionId, next);
+  }
+
+  /** ConfirmationCard 取消折叠：本地标记 meta_data.cancelled=true，UI 上隐藏按钮即可。 */
+  function applyPlanCancel(sessionId: string, messageId: string) {
+    const list = messagesBySession.value[sessionId] || [];
+    const next = list.map((m) =>
+      m.id === messageId
+        ? {
+            ...m,
+            meta_data: { ...(m.meta_data || {}), cancelled: true },
+          }
+        : m,
+    );
+    _setMessages(sessionId, next);
+  }
+
+  /** TaskBadge 自身刷新成功后回写 meta（status / 进度 / 耗时）。 */
+  function applyTaskBadgePatchByMessage(
+    sessionId: string,
+    messageId: string,
+    patch: Partial<TaskBadgeMeta>,
+  ) {
+    const list = messagesBySession.value[sessionId] || [];
+    const next = list.map((m) => {
+      if (m.id !== messageId) return m;
+      return {
+        ...m,
+        meta_data: { ...(m.meta_data || {}), ...patch },
+      };
+    });
+    _setMessages(sessionId, next);
+  }
+
+  /** SSE task_status / 离线刷新拿到进度后按 task_id 批量更新。 */
+  function patchTaskBadgeByTaskId(
+    sessionId: string,
+    taskId: string,
+    patch: Partial<TaskBadgeMeta>,
+  ) {
+    const list = messagesBySession.value[sessionId] || [];
+    const next = applyTaskBadgePatch(list, taskId, patch);
+    if (next !== list) {
+      _setMessages(sessionId, next);
+    }
   }
 
   async function loadSessions(projectId?: string) {
@@ -219,6 +308,7 @@ export function useChat() {
         abortHandles[sessionId]?.();
       }
       delete abortHandles[sessionId];
+      unsubscribeSystemEvents(sessionId);
       _setStreamingFlag(sessionId, false);
       _clearStream(sessionId);
       const next = { ...messagesBySession.value };
@@ -562,6 +652,149 @@ export function useChat() {
     });
   }
 
+  // ─── Phase 13 / Task 13.3 — 系统事件 SSE & pending 汇总 ─────────────────
+
+  /**
+   * 订阅会话级系统事件流；每个 session 独立一根 SSE，切换 session 时**保留**
+   * 老连接（与 chat 主流的设计一致），允许后台任务的事件在用户切走时仍然
+   * 被消费——任务完成时即便用户在别的 session，未读铃铛能 +1 提醒。
+   *
+   * `force=true` 时会先 abort 旧连接再起新的（重连 / 错误恢复用）。
+   */
+  function subscribeSystemEvents(sessionId: string, force = false) {
+    if (!sessionId) return;
+    if (!force && systemEventAborts[sessionId]) return;
+    if (force && systemEventAborts[sessionId]) {
+      systemEventAborts[sessionId]();
+      delete systemEventAborts[sessionId];
+    }
+
+    const handle = fetchSSE(
+      chatSystemEventsUrl(sessionId),
+      null,
+      {
+        onEvent(event) {
+          const kind = String(event.type || "");
+          if (kind === "skill_card") {
+            const msg = _systemEventToMessage(event, "skill_card");
+            if (msg) _appendMessageIfMissing(sessionId, msg);
+          } else if (kind === "execution_event") {
+            const msg = _systemEventToMessage(event, "execution_event");
+            if (msg) {
+              _appendMessageIfMissing(sessionId, msg);
+              if (sessionId !== currentSessionId.value) {
+                unreadEvents.value += 1;
+              }
+            }
+          } else if (kind === "task_status") {
+            const taskId = String(event.task_id || "");
+            const status = typeof event.status === "string" ? event.status : "";
+            const progress = (event.progress as Record<string, unknown>) || {};
+            if (taskId) {
+              patchTaskBadgeByTaskId(sessionId, taskId, {
+                status,
+                total_cases: typeof progress.total_cases === "number"
+                  ? progress.total_cases
+                  : undefined,
+                passed_cases: typeof progress.passed_cases === "number"
+                  ? progress.passed_cases
+                  : undefined,
+                failed_cases: typeof progress.failed_cases === "number"
+                  ? progress.failed_cases
+                  : undefined,
+                skipped_cases: typeof progress.skipped_cases === "number"
+                  ? progress.skipped_cases
+                  : undefined,
+              });
+            }
+          }
+        },
+        onError() {
+          // 错误兜底：清掉 abort handle，调用方可在断网回来时重订阅。
+          delete systemEventAborts[sessionId];
+        },
+        onDone() {
+          delete systemEventAborts[sessionId];
+        },
+      },
+      { method: "GET" },
+    );
+    systemEventAborts[sessionId] = handle.abort;
+  }
+
+  function unsubscribeSystemEvents(sessionId: string) {
+    if (!sessionId) return;
+    systemEventAborts[sessionId]?.();
+    delete systemEventAborts[sessionId];
+  }
+
+  function _appendMessageIfMissing(sessionId: string, msg: ChatMessage) {
+    const list = messagesBySession.value[sessionId] || [];
+    if (list.some((m) => m.id === msg.id)) return;
+    _appendMessage(sessionId, msg);
+  }
+
+  /** 把 SSE 推过来的 skill_card / execution_event 事件还原成 ChatMessage。 */
+  function _systemEventToMessage(
+    event: Record<string, unknown>,
+    kind: "skill_card" | "execution_event",
+  ): ChatMessage | null {
+    const messageId = String(event.message_id || "");
+    if (!messageId) return null;
+    const sessionId = String(event.session_id || "");
+    if (!sessionId) return null;
+    const meta: Record<string, unknown> =
+      kind === "skill_card"
+        ? {
+            action_type: "skill_card",
+            plan_id: event.plan_id,
+            plan: event.plan,
+          }
+        : {
+            action_type: "execution_event",
+            task_id: event.task_id,
+            result: event.result,
+          };
+    const created = String(event.created_at || new Date().toISOString());
+    return {
+      id: messageId,
+      session_id: sessionId,
+      role: "assistant",
+      content: typeof event.content === "string" ? (event.content as string) : "",
+      tokens_used: null,
+      model_used: null,
+      meta_data: meta,
+      kind,
+      created_at: created,
+    };
+  }
+
+  /** 加载首屏顶部 "你离开期间完成 N 个任务" 汇总卡数据；count==0 时 banner 不渲染。 */
+  async function loadPendingSummary(sessionId: string) {
+    try {
+      const res = await getPendingTaskSummaryApi(sessionId);
+      if (res.success) {
+        pendingSummary.value = res.data;
+      }
+    } catch {
+      pendingSummary.value = null;
+    }
+  }
+
+  function clearPendingSummary() {
+    pendingSummary.value = null;
+    unreadEvents.value = 0;
+  }
+
+  /** 切换会话 / 重连后调用：把所有非终态 TaskBadge 状态拉一次到最新。 */
+  async function refreshTaskBadgesForSession(sessionId: string) {
+    const list = messagesBySession.value[sessionId] || [];
+    const next = await refreshAllTaskBadges(list);
+    if (next !== list) {
+      _setMessages(sessionId, next);
+    }
+  }
+
   function stopGeneration() {
     const sid = currentSessionId.value;
     if (!sid) return;
@@ -595,5 +828,16 @@ export function useChat() {
     addFile,
     removeFile,
     clearFiles,
+    // Phase 13 / Task 13.3 — message kind helpers + system events SSE
+    applyPlanConfirmation,
+    applyPlanCancel,
+    applyTaskBadgePatchByMessage,
+    subscribeSystemEvents,
+    unsubscribeSystemEvents,
+    pendingSummary,
+    unreadEvents,
+    loadPendingSummary,
+    clearPendingSummary,
+    refreshTaskBadgesForSession,
   };
 }

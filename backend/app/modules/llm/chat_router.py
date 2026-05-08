@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, Query, UploadFile, File
+from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,12 +11,14 @@ from app.modules.auth.models import User
 from app.modules.llm.chat_service import (
     create_session,
     delete_session,
+    get_pending_task_summary,
     get_session_detail,
     get_session_messages,
     list_sessions,
     send_message_stream,
     start_chat_task,
     subscribe_chat_stream,
+    subscribe_session_system_events,
     update_session,
 )
 from app.modules.llm.file_handler import process_upload
@@ -180,3 +182,44 @@ async def upload_file(
     except ValueError as e:
         raise AppException(str(e), code="FILE_ERROR")
     return success_response(data=result)
+
+
+# ─────────────── Phase 13 / Task 13.3 — 系统事件 SSE + 离线汇总 ───────────────
+
+
+@router.get("/sessions/{session_id}/system-events")
+async def stream_session_system_events(
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+):
+    """SSE 订阅会话级系统事件（skill_card / task_status / execution_event）。
+
+    前端打开 chat 视图时建立长连接；与 ``/messages/{id}/stream`` 解耦——后者跟
+    随单条 assistant 消息生命周期，本流跟随整个 session。事件类型见
+    ``system_event_service.publish_*``。
+    """
+
+    async def event_generator():
+        async for chunk in subscribe_session_system_events(session_id, current_user):
+            yield chunk
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/sessions/{session_id}/pending-task-summary", response_model=dict)
+async def session_pending_task_summary(
+    session_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """首屏顶部 "你离开期间完成 N 个任务" 汇总卡的数据源（最近 20 条 execution_event）。"""
+    summary = await get_pending_task_summary(db, session_id, current_user)
+    return success_response(data=summary)

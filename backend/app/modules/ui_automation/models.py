@@ -264,6 +264,24 @@ class UIExecution(Base):
         nullable=True,
     )
 
+    # ── Phase 13 / Task 13.0 派发来源溯源（M1 baseline）────────────
+    #: ``catalog`` / ``adhoc`` / ``chat``。二期"用例管理 → 执行 UI 自动化"主入口
+    #: 一律 ``catalog``（与三期前等价）；chat 派发 = ``chat``；M2 即席用例 =
+    #: ``adhoc``。统计页默认按 ``source='catalog'`` 过滤防止 adhoc 调试污染通过率。
+    source: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="catalog", server_default=text("'catalog'"),
+    )
+    #: 仅 ``source='chat'`` 时有值；执行完成后由 ``system_event_service`` 据此把
+    #: ``execution_event`` 系统消息回流到正确会话。
+    triggered_chat_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    #: 仅 ``source='adhoc'`` 时有值（M2 task 13.6 接通后填入草拟步骤快照）；M1
+    #: 阶段始终保持 NULL，本字段在 baseline 中先建好仅是为了避免 M2 再迁移一次。
+    adhoc_steps: Mapped[dict | None] = mapped_column(JSONB)
+
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

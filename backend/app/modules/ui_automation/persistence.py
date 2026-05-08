@@ -86,6 +86,10 @@ async def init_execution_record(
     mode: str = "normal",
     total_cases: int = 0,
     config_snapshot: dict[str, Any] | None = None,
+    # Phase 13 / Task 13.3 —— chat 派发新增；老调用方不传时按 ORM column 默认
+    # 走（source='catalog'，其余 NULL），与 Phase 12 行为一致。
+    source: str | None = None,
+    triggered_chat_session_id: uuid.UUID | None = None,
 ) -> UIExecution:
     """如果记录不存在则插入；存在则更新初始字段。返回 ORM 行。"""
     async with async_session_factory() as session:
@@ -109,6 +113,10 @@ async def init_execution_record(
                 created_at=now,
                 updated_at=now,
             )
+            if source is not None:
+                row.source = source
+            if triggered_chat_session_id is not None:
+                row.triggered_chat_session_id = triggered_chat_session_id
             session.add(row)
             await session.commit()
             await session.refresh(row)
@@ -117,6 +125,10 @@ async def init_execution_record(
         existing.total_cases = total_cases
         existing.config_snapshot = config_snapshot or {}
         existing.chat_message_id = chat_message_id
+        if source is not None:
+            existing.source = source
+        if triggered_chat_session_id is not None:
+            existing.triggered_chat_session_id = triggered_chat_session_id
         await session.commit()
         await session.refresh(existing)
         return existing

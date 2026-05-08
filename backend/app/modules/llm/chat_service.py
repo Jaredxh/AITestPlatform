@@ -220,6 +220,7 @@ def _to_message_response(msg: ChatMessage) -> ChatMessageResponse:
         model_used=msg.model_used,
         meta_data=msg.meta_data,
         skill_invocation_id=msg.skill_invocation_id,
+        kind=getattr(msg, "kind", "normal") or "normal",
         created_at=msg.created_at,
     )
 
@@ -534,6 +535,90 @@ async def _run_chat_task(
         except Exception:  # noqa: BLE001
             pass
         await stream.mark_done()
+
+
+async def subscribe_session_system_events(
+    session_id: uuid.UUID, user: User
+) -> AsyncGenerator[str, None]:
+    """Phase 13 / Task 13.3 — 订阅会话级系统事件流（kind=skill_card / task_status /
+    execution_event）。
+
+    与 ``/messages/{id}/stream`` 完全解耦：那条 SSE 跟着单条 assistant 消息的
+    生命周期；本流跟着整个 session 的"系统侧异步通知"——前端在打开会话时
+    持续连一根，期间任何 ``propose_execution_plan`` 落卡 / 执行进度 / 执行完成
+    都会被实时推过来。
+
+    断连容忍：本流只是"实时性优化"，事件落库 happens-before
+    ``SYSTEM_EVENT_BUS.publish``——前端断开后回来通过 ``GET /messages`` 历史拉
+    取就能看到所有 ``kind=skill_card / execution_event`` 持久化消息。
+    """
+    async with async_session_factory() as db:
+        session = await db.get(ChatSession, session_id)
+        if session is None:
+            yield _sse_error("会话不存在")
+            yield _sse_done()
+            return
+        if session.user_id != user.id and not user.is_superuser:
+            yield _sse_error("无权访问该会话")
+            yield _sse_done()
+            return
+
+    from app.modules.llm.system_event_service import SYSTEM_EVENT_BUS
+
+    yield _sse({"type": "ready", "session_id": str(session_id)})
+
+    try:
+        async for event in SYSTEM_EVENT_BUS.subscribe(session_id):
+            yield _sse(event)
+    except asyncio.CancelledError:
+        # 客户端断开（浏览器关页 / 切走），由 fastapi 抛 CancelledError；正常结束。
+        raise
+
+
+async def get_pending_task_summary(
+    db: AsyncSession, session_id: uuid.UUID, user: User
+) -> dict:
+    """Phase 13 / Task 13.3 — "你离开期间完成 N 个任务"首屏汇总卡数据源。
+
+    扫该 session 末尾 24h 内所有 ``kind='execution_event'`` 消息，并统计成功 /
+    失败用例数。前端在 chat 视图打开时调一次：
+    - ``count == 0`` → 不渲染汇总卡
+    - ``count > 0`` → 顶部黄色 banner，点击折叠展开任务列表
+
+    设计文档 §10.8 / §10.10 的"完全离线 + 上线"兜底场景。
+    """
+    session = await _get_session_or_404(db, session_id)
+    _check_owner(session, user)
+
+    from sqlalchemy import desc as _desc
+
+    stmt = (
+        select(ChatMessage)
+        .where(
+            ChatMessage.session_id == session_id,
+            ChatMessage.kind == "execution_event",
+        )
+        .order_by(_desc(ChatMessage.created_at))
+        .limit(20)
+    )
+    rows = list((await db.execute(stmt)).scalars().all())
+    items: list[dict] = []
+    for m in rows:
+        meta = dict(m.meta_data or {})
+        items.append(
+            {
+                "message_id": str(m.id),
+                "task_id": meta.get("task_id"),
+                "result": meta.get("result") or {},
+                "content": m.content,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+            },
+        )
+    return {
+        "session_id": str(session_id),
+        "count": len(items),
+        "items": items,
+    }
 
 
 async def subscribe_chat_stream(
@@ -918,6 +1003,12 @@ async def _handle_chat_stream(
             session.project_id,
             session.llm_config_id,
             assistant_message_id,
+            # Phase 13 / Task 13.2 — env_priority 5 层解析需要 session_id /
+            # chat_context（Layer 2）+ 当前用户原话（Layer 1）。老调用方不传也
+            # 能跑——env_priority 内部对 None 容错回退下一层。
+            session_id=getattr(session, "id", None),
+            chat_context=dict(session.chat_context or {}),
+            user_message=user_content,
         ):
             for iteration in range(MAX_TOOL_ITERATIONS):
                 round_content = ""

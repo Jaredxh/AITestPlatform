@@ -68,10 +68,15 @@ async def test_safe_run_tool_rejects_platform_when_no_active_system_skill() -> N
 
 @pytest.mark.asyncio
 async def test_safe_run_tool_rejects_platform_not_declared_by_skill() -> None:
-    """system_* skill 已激活，但该 platform_* 未在其 tools_required 中 → 拒。"""
+    """system_* skill 已激活，但该 platform_* 未在其 tools_required 中 → 拒。
+
+    Phase 13 / Task 13.1：``platform_run_ui_execution`` 已放进 LLM 黑名单走更
+    严格的拒绝分支（"Tool not allowed for AI invocation"）；本 test 改用
+    ``platform_list_environments`` 验证"未声明"分支仍按原逻辑拒绝。
+    """
     raw = await safe_run_tool(
         AsyncMock(),
-        "platform_run_ui_execution",
+        "platform_list_environments",
         "{}",
         active_system_skill_slugs={"system_ui_automation"},
         skill_id_by_tool_name={},

@@ -22,9 +22,15 @@ logging.getLogger("app").setLevel(logging.INFO)
 
 
 def create_app() -> FastAPI:
+    from app.modules.skills.builtin.ui_automation.tools import (
+        ensure_ui_automation_tools_registered,
+    )
     from app.modules.skills.platform_tools import ensure_platform_tools_registered
 
     ensure_platform_tools_registered()
+    # Phase 13 / Task 13.1：启动期注册 4 个 system__ui_automation__* tool 到
+    # TOOL_REGISTRY；与 platform_* 共存，由 safe_invoke 按命名空间分别校验。
+    ensure_ui_automation_tools_registered()
 
     app = FastAPI(
         title=settings.PROJECT_NAME,

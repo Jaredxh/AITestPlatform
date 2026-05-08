@@ -4,7 +4,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-
 # ── 文档相关 ──
 
 class DocumentUploadResponse(BaseModel):
@@ -100,6 +99,9 @@ class ReviewResponse(BaseModel):
     issues: list[Any] | None = None
     summary: str | None = None
     review_time_ms: int | None = None
+    #: 失败时 LLM/parse 异常的原始 message，用于前端 toast 透出错误细节；
+    #: 成功时是 LLM 原始 JSON。前端只在 status=='failed' 显示前 N 字。
+    raw_response: str | None = None
     created_at: datetime
     updated_at: datetime
 

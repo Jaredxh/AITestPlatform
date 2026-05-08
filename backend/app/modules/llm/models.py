@@ -43,6 +43,21 @@ class ChatSession(Base):
     )
 
 
+#: Phase 13 / Task 13.0 — chat_messages.kind 枚举值。
+#:
+#: 历史/默认 ``normal``；新值由后续 task 写入：``skill_card`` 由 LLM 调
+#: ``propose_execution_plan`` 后落库（task 13.3），``task_badge`` 由用户确认
+#: 派发后落库（task 13.3），``execution_event`` 由 ``system_event_service`` 在
+#: 执行完成时落库（本 task）。前端按 kind 分发到不同消息组件；未识别 kind
+#: 兜底走 ``normal`` 渲染分支保持向前兼容。
+CHAT_MESSAGE_KINDS: tuple[str, ...] = (
+    "normal",
+    "skill_card",
+    "task_badge",
+    "execution_event",
+)
+
+
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
 
@@ -57,6 +72,12 @@ class ChatMessage(Base):
         UUID(as_uuid=True),
         ForeignKey("skill_usage_logs.id", ondelete="SET NULL"),
         nullable=True,
+    )
+    #: Phase 13 / Task 13.0 — 消息渲染类别。``normal`` 走老气泡分支，新枚举值
+    #: 由 M1 task 13.3 / system_event_service 写入；老数据迁移 default 为
+    #: ``'normal'``，select 不报错。
+    kind: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="normal", server_default="normal",
     )
 
     session: Mapped["ChatSession"] = relationship(back_populates="messages")

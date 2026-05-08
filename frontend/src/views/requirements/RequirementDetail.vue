@@ -429,14 +429,35 @@ async function handleReview() {
   startProgressSimulation();
   try {
     const res = await triggerReviewApi(documentId);
-    if (res.success) {
+    // 后端兜底：即使 LLM 失败也会返回 success=true，但 review.status="failed"
+    // 把原始错误存进 raw_response。前端必须按 review.status 二次判断，否则
+    // 用户会看到"评审完成"绿色 toast 但实际 review 是失败状态。
+    if (res.success && res.data?.status === "completed") {
       message.success("AI 评审完成");
       expandedReviewId.value = res.data.id;
       expandedReview.value = res.data;
       await Promise.all([fetchReviews(), fetchDocument()]);
+    } else if (res.success && res.data?.status === "failed") {
+      const detail = (res.data as { raw_response?: string }).raw_response;
+      message.error(
+        detail ? `AI 评审失败：${truncate(detail, 200)}` : "AI 评审失败，请查看后端日志",
+        { duration: 8000 },
+      );
+      await Promise.all([fetchReviews(), fetchDocument()]);
     }
-  } catch {
-    message.error("评审失败，请重试");
+  } catch (err) {
+    // ofetch 在非 2xx 时会抛 FetchError；把后端 ``message`` / ``code`` 透传出来，
+    // 不要再用"评审失败，请重试"这种黑盒字样——422 / 500 用户看到的提示完全
+    // 不一样（422 通常是没配 LLM 或文档没解析成功，500 才是真的代码 bug）。
+    const data = (err as { data?: { message?: string; code?: string } })?.data;
+    const status = (err as { status?: number; statusCode?: number })?.status
+      ?? (err as { statusCode?: number })?.statusCode;
+    const detail = data?.message
+      || (err as Error)?.message
+      || "未知错误";
+    message.error(`评审失败 (${status ?? "?"}): ${truncate(detail, 200)}`, {
+      duration: 8000,
+    });
   } finally {
     stopProgressSimulation();
     setTimeout(() => {
@@ -444,6 +465,10 @@ async function handleReview() {
       reviewProgress.value = 0;
     }, 600);
   }
+}
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max)}...` : s;
 }
 
 async function handleExpandReview(reviewId: string) {

@@ -17,7 +17,37 @@
         :reason="skillBadgeReason"
       />
 
-      <div class="message-bubble__content">
+      <!-- Phase 13 / Task 13.3 — 按 kind 分发渲染：skill_card / task_badge /
+           execution_event 三种新类别走专属组件；未识别 kind 退化到 normal。 -->
+      <div
+        v-if="!isUser && messageKind === 'skill_card' && plan"
+        class="message-bubble__content message-bubble__content--card"
+      >
+        <confirmation-card
+          :plan="plan"
+          :session-id="message.session_id"
+          :message-id="message.id"
+          @confirm="onPlanConfirm"
+          @cancel="onPlanCancel"
+        />
+      </div>
+      <div
+        v-else-if="!isUser && messageKind === 'task_badge' && taskBadgeMeta"
+        class="message-bubble__content message-bubble__content--card"
+      >
+        <task-badge
+          :meta="taskBadgeMeta"
+          :on-update="onTaskBadgePatch"
+        />
+      </div>
+      <div
+        v-else-if="!isUser && messageKind === 'execution_event' && executionEventMeta"
+        class="message-bubble__content message-bubble__content--card"
+      >
+        <execution-event-card :meta="executionEventMeta" />
+      </div>
+
+      <div v-else class="message-bubble__content">
         <!-- User message -->
         <div
           v-if="isUser"
@@ -142,20 +172,85 @@ import { useRouter } from "vue-router";
 import { NAvatar, NProgress, NTag } from "naive-ui";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import type { ChatMessage } from "@/services/chat";
+import type { ChatMessage, ChatMessageKind } from "@/services/chat";
 import type { SkillActivationReason } from "@/services/skills";
+import type {
+  ExecutionEventMeta,
+  ExecutionPlanCard,
+  TaskBadgeMeta,
+} from "@/components/skills/types";
 import SkillUsageBadge from "@/components/chat/SkillUsageBadge.vue";
+import ConfirmationCard from "@/components/skills/ConfirmationCard.vue";
+import TaskBadge from "@/components/skills/TaskBadge.vue";
+import ExecutionEventCard from "@/components/skills/ExecutionEventCard.vue";
 
 const props = defineProps<{
   message: ChatMessage;
+}>();
+
+const emit = defineEmits<{
+  (e: "plan-confirm", payload: {
+    messageId: string;
+    taskId: string;
+    plan: ExecutionPlanCard;
+  }): void;
+  (e: "plan-cancel", messageId: string): void;
+  (e: "task-badge-patch", payload: { messageId: string; patch: Partial<TaskBadgeMeta> }): void;
 }>();
 
 const router = useRouter();
 
 const isUser = computed(() => props.message.role === "user");
 
+// Phase 13 / Task 13.3 — 按 message.kind 分发；缺失字段退化到 'normal'。
+const messageKind = computed<ChatMessageKind>(() => {
+  const k = props.message.kind;
+  if (k === "skill_card" || k === "task_badge" || k === "execution_event") {
+    return k;
+  }
+  return "normal";
+});
+
 const actionMeta = computed(() => props.message.meta_data as Record<string, any> | null);
 const actionType = computed(() => actionMeta.value?.action_type as string | undefined);
+
+/** kind=skill_card 消息中，meta_data.plan 即是后端发的 ExecutionPlanCard。 */
+const plan = computed<ExecutionPlanCard | null>(() => {
+  if (messageKind.value !== "skill_card") return null;
+  const raw = actionMeta.value?.plan;
+  if (!raw || typeof raw !== "object") return null;
+  return raw as ExecutionPlanCard;
+});
+
+/** kind=task_badge：meta_data 即 TaskBadgeMeta 兼平铺字段（action_type + 业务字段）。 */
+const taskBadgeMeta = computed<TaskBadgeMeta | null>(() => {
+  if (messageKind.value !== "task_badge") return null;
+  const meta = actionMeta.value || {};
+  if (!meta.task_id) return null;
+  return meta as unknown as TaskBadgeMeta;
+});
+
+/** kind=execution_event：meta_data 是 {task_id, result}。 */
+const executionEventMeta = computed<ExecutionEventMeta | null>(() => {
+  if (messageKind.value !== "execution_event") return null;
+  const meta = actionMeta.value || {};
+  if (!meta.task_id) return null;
+  return meta as unknown as ExecutionEventMeta;
+});
+
+function onPlanConfirm(payload: {
+  taskId: string;
+  plan: ExecutionPlanCard;
+  messageId: string;
+}) {
+  emit("plan-confirm", payload);
+}
+function onPlanCancel() {
+  emit("plan-cancel", props.message.id);
+}
+function onTaskBadgePatch(patch: Partial<TaskBadgeMeta>) {
+  emit("task-badge-patch", { messageId: props.message.id, patch });
+}
 
 /**
  * 当前消息消费的 skill 信息：
@@ -325,5 +420,18 @@ function formatTime(dateStr: string) {
 
 .action-card {
   padding: 4px 0 8px;
+}
+
+/* Phase 13 / Task 13.3 — kind=skill_card / task_badge / execution_event 卡片
+   不需要老气泡的边框 / 圆角 / 内边距，让里面组件自己控样式。 */
+.message-bubble__content--card {
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+  width: 100%;
+}
+.message-bubble--user .message-bubble__content--card {
+  background: transparent !important;
 }
 </style>

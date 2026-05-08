@@ -95,6 +95,15 @@ class Testcase(Base):
         JSONB, nullable=False, server_default=text("'[]'::jsonb"),
     )
 
+    # Phase 13 / Task 13.2：用例标签集合（如 ["regression", "P0", "login"]）。
+    # ui_automation skill 的 case_matcher 策略 2 用 tags 做语义召回——用户说
+    # "回归用例" / "P0 用例" / "登录相关"时按此精确命中。GIN 索引在 alembic
+    # ``d9b1c2e4f5a6_add_testcases_tags`` 中创建。前端 / 老 API 不强制使用，
+    # 默认空数组与历史行为完全等价。
+    tags: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb"),
+    )
+
     project = relationship("Project", lazy="selectin")
     module = relationship("TestcaseModule", back_populates="testcases", lazy="selectin")
     creator = relationship("User", lazy="selectin")

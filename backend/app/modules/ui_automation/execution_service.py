@@ -92,63 +92,120 @@ async def start_execution(
        **之前**——否则前端可能抢先发 GET /stream 拿到 None，错过实时事件
     5. ``asyncio.create_task`` 启动 Engine（独立 DB session）
     6. 返回 ``ExecutionListItem`` 给前端，前端拿 id 去 GET /stream
+
+    Phase 13 / Task 13.3 增量：``data.plan_id`` 不为空时走"AI 提议 → 用户确认"
+    路径：用 plan_id 反查后端缓存还原 testcase_ids / environment_id /
+    llm_config_id（前端只送 plan_id 不让用户篡改），并把 ``source='chat'`` +
+    ``triggered_chat_session_id`` 落库，用于执行完成时回流 chat 消息。
     """
     await _ensure_project_exists(db, project_id)
     await _check_project_member(db, project_id, user)
 
-    environment_id = await _resolve_environment_id(db, project_id, data.environment_id)
-    await _validate_testcase_ownership(db, project_id, data.testcase_ids)
+    # ─── Phase 13：plan_id 反查 ─────────────────────────────────────────
+    plan_source = data.source
+    plan_session_id = data.triggered_chat_session_id
+    effective_data = data
+    if data.plan_id is not None:
+        from app.modules.skills.builtin.ui_automation.plan_builder import (
+            get_cached_plan,
+        )
+
+        cached = await get_cached_plan(data.plan_id)
+        if cached is None:
+            raise AppException(
+                "执行计划已过期或不存在，请让 AI 重新生成",
+                code="EXEC_PLAN_EXPIRED",
+            )
+        if cached.project_id != project_id:
+            raise AppException(
+                "执行计划所属项目与当前项目不一致",
+                code="EXEC_PLAN_PROJECT_MISMATCH",
+            )
+        # 用 plan 还原入参（前端送的 testcase_ids / environment_id 一律忽略，
+        # 防止用户在前端伪造已确认 plan 的字段）。
+        merged = data.model_copy(
+            update={
+                "testcase_ids": cached.case_ids,
+                "environment_id": cached.environment_id,
+                "llm_config_id": cached.llm_config_id or data.llm_config_id,
+            },
+        )
+        effective_data = merged
+        plan_source = data.source or "chat"
+
+    if not effective_data.testcase_ids:
+        raise AppException(
+            "testcase_ids 不能为空（或传 plan_id 由后端还原）",
+            code="EXEC_NO_TESTCASES",
+        )
+
+    environment_id = await _resolve_environment_id(
+        db, project_id, effective_data.environment_id,
+    )
+    await _validate_testcase_ownership(db, project_id, effective_data.testcase_ids)
 
     execution_id = uuid.uuid4()
-    config_snapshot = _build_config_snapshot(data, testcase_ids=data.testcase_ids)
+    config_snapshot = _build_config_snapshot(
+        effective_data, testcase_ids=effective_data.testcase_ids,
+    )
+    if data.plan_id is not None:
+        config_snapshot["plan_id"] = str(data.plan_id)
+    if plan_source:
+        config_snapshot["source"] = plan_source
 
-    # 1) 写 pending 行：用 persistence 自带的 init 函数（独立 session）以保持
-    #    Engine 后台 task 看到一致的状态，无需在请求 session 上提交。
     await persistence.init_execution_record(
         execution_id=execution_id,
         project_id=project_id,
         environment_id=environment_id,
         triggered_by=user.id,
-        chat_message_id=data.chat_message_id,
-        mode=data.mode,
-        total_cases=len(data.testcase_ids),
+        chat_message_id=effective_data.chat_message_id,
+        mode=effective_data.mode,
+        total_cases=len(effective_data.testcase_ids),
         config_snapshot=config_snapshot,
+        source=plan_source,
+        triggered_chat_session_id=plan_session_id,
     )
 
-    # 2) 必须先 register 再起 task：前端可能在 5ms 内就发 SSE 订阅。
     await EXECUTION_STREAM_HUB.register(execution_id)
 
-    # 3) 派后台任务。Engine 自管 DB session，不依赖此请求。
     inputs = ExecutionInputs(
         execution_id=execution_id,
         project_id=project_id,
         environment_id=environment_id,
-        testcase_ids=list(data.testcase_ids),
-        llm_config_id=data.llm_config_id,
+        testcase_ids=list(effective_data.testcase_ids),
+        llm_config_id=effective_data.llm_config_id,
         triggered_by=user.id,
-        manual_overrides=dict(data.manual_overrides or {}),
-        loaded_set_ids=list(data.loaded_set_ids or []),
-        mode=data.mode,
-        chat_message_id=data.chat_message_id,
-        token_budget_override=data.token_budget,
-        strict_data_mode=bool(data.strict_data_mode),
-        module_entry_overrides=dict(data.module_entry_overrides or {}),
+        manual_overrides=dict(effective_data.manual_overrides or {}),
+        loaded_set_ids=list(effective_data.loaded_set_ids or []),
+        mode=effective_data.mode,
+        chat_message_id=effective_data.chat_message_id,
+        token_budget_override=effective_data.token_budget,
+        strict_data_mode=bool(effective_data.strict_data_mode),
+        module_entry_overrides=dict(effective_data.module_entry_overrides or {}),
     )
-    asyncio.create_task(_run_engine_background(inputs))
+    asyncio.create_task(_run_engine_background(inputs, chat_session_id=plan_session_id))
 
-    # 4) 用刚写的行回包成 list item 返回（read-after-write，确保字段一致）
     row = await db.get(UIExecution, execution_id)
     if row is None:
-        # 极少数情况：Engine 已经 flush 完且行被 cascade 删？理论不可能。
         raise AppException("执行已创建但读取失败，请刷新列表查看", code="EXEC_CREATED_READ_FAILED")
     return _to_list_item(row)
 
 
-async def _run_engine_background(inputs: ExecutionInputs) -> None:
+async def _run_engine_background(
+    inputs: ExecutionInputs,
+    *,
+    chat_session_id: uuid.UUID | None = None,
+) -> None:
     """ExecutionEngine 入口的"裸调"包装：吞所有异常并落日志。
 
     Engine 内部已经有 try/finally 保证 ``flush_execution`` 与 ``mark_done``
     一定执行；这里只是再加一层保险，避免 background task 静默崩溃后没人发现。
+
+    Phase 13 / Task 13.3：``chat_session_id`` 不为空时（chat ConfirmationCard
+    派发），Engine 跑完后用独立 DB session 调 ``publish_execution_done``，把
+    "✅ xxx 已完成" 系统消息回流到对应 chat 会话末尾 + 通过 SYSTEM_EVENT_BUS
+    实时推送给前端。Engine outcome 不返回但行已 flush 完，从 ``ui_executions``
+    表读最新态当 result。
     """
     try:
         engine = ExecutionEngine()
@@ -156,6 +213,56 @@ async def _run_engine_background(inputs: ExecutionInputs) -> None:
     except Exception:  # noqa: BLE001
         logger.exception(
             "ExecutionEngine background task crashed: execution_id=%s",
+            inputs.execution_id,
+        )
+
+    if chat_session_id is None:
+        return
+
+    # 完成回流：哪怕 Engine 抛了，仍尝试发"❌ 已结束"消息（用户得知任务跑挂）。
+    try:
+        from app.database import async_session_factory
+        from app.modules.llm.system_event_service import publish_execution_done
+        from app.modules.testcases.models import Testcase
+
+        async with async_session_factory() as bg_db:
+            row = await bg_db.get(UIExecution, inputs.execution_id)
+            if row is None:
+                logger.warning(
+                    "_run_engine_background: execution row missing post-run: %s",
+                    inputs.execution_id,
+                )
+                return
+            # 取首条用例的标题作为人类可读 title（多用例时 "登录验证 等 N 条"）。
+            title = "UI 自动化任务"
+            if inputs.testcase_ids:
+                first_tc = await bg_db.get(Testcase, inputs.testcase_ids[0])
+                if first_tc is not None:
+                    base = first_tc.title or f"用例 #{first_tc.case_no}"
+                    if len(inputs.testcase_ids) > 1:
+                        title = f"{base} 等 {len(inputs.testcase_ids)} 条"
+                    else:
+                        title = base
+            result = {
+                "title": title,
+                "status": row.status,
+                "total_cases": row.total_cases,
+                "passed_cases": row.passed_cases,
+                "failed_cases": row.failed_cases,
+                "skipped_cases": row.skipped_cases,
+                "duration_ms": row.duration_ms,
+                "tokens_total": row.tokens_total,
+                "error_message": row.error_message,
+            }
+            await publish_execution_done(
+                bg_db,
+                session_id=chat_session_id,
+                task_id=inputs.execution_id,
+                result=result,
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "publish_execution_done failed for chat-triggered execution %s",
             inputs.execution_id,
         )
 

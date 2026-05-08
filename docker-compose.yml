@@ -36,7 +36,18 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aitest123}
       POSTGRES_DB: ${POSTGRES_DB:-aitest_platform}
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
-      ENCRYPT_KEY: ${ENCRYPT_KEY:-}
+      # ⚠️ 故意不写 ``${ENCRYPT_KEY:-}`` 这种带空默认值：pydantic-settings 会
+      # 把空串当成"用户显式覆盖"，吃掉 backend/app/config.py 里那条 dev 默认
+      # Fernet key，启动后第一次保存 LLM 配置就抛 ``ValueError: Fernet key
+      # must be 32 url-safe base64-encoded bytes`` → 500。
+      #
+      # 用 ``${ENCRYPT_KEY:?...}`` 强校验：没配置 / 配置成空 → 容器拒绝启动
+      # 并打印明确报错，比"起来后偶发 500"好定位。
+      #
+      # 标准启动流程：``cp .env.example .env`` → ``docker compose up -d``。
+      # .env.example 已经带了一把开箱即用的默认 key（仅适合内网/测试），
+      # 想换成独立 key 见 .env.example 里 ENCRYPT_KEY 那段注释。
+      ENCRYPT_KEY: ${ENCRYPT_KEY:?ENCRYPT_KEY 未配置：cp .env.example .env 后再 docker compose up -d，详见 .env.example 里 ENCRYPT_KEY 章节}
       # DEBUG 从 .env 读，默认 false（生产安全默认）
       # 本地开发想看 Swagger /docs / /redoc → .env 里设 DEBUG=true 然后 up -d backend
       DEBUG: ${DEBUG:-false}

@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.crypto import decrypt, encrypt
-from app.core.exceptions import AppException, NotFoundException
+from app.core.exceptions import NotFoundException
 from app.modules.auth.models import User
 from app.modules.llm.models import LLMConfig
 from app.modules.llm.schemas import (

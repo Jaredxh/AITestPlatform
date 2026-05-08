@@ -15,7 +15,14 @@
       </div>
 
       <div v-else class="message-list__inner">
-        <message-bubble v-for="msg in messages" :key="msg.id" :message="msg" />
+        <message-bubble
+          v-for="msg in messages"
+          :key="msg.id"
+          :message="msg"
+          @plan-confirm="(p) => emit('plan-confirm', p)"
+          @plan-cancel="(id) => emit('plan-cancel', id)"
+          @task-badge-patch="(p) => emit('task-badge-patch', p)"
+        />
 
         <div v-if="hasStreamingOutput" class="message-list__streaming">
           <div class="message-list__avatar">
@@ -92,12 +99,26 @@ import DOMPurify from "dompurify";
 import MessageBubble from "./MessageBubble.vue";
 import type { ChatMessage } from "@/services/chat";
 import type { StreamingState } from "@/composables/useChat";
+import type {
+  ExecutionPlanCard,
+  TaskBadgeMeta,
+} from "@/components/skills/types";
 
 const props = defineProps<{
   messages: ChatMessage[];
   streaming: StreamingState;
   isStreaming: boolean;
   loading: boolean;
+}>();
+
+const emit = defineEmits<{
+  (e: "plan-confirm", payload: {
+    messageId: string;
+    taskId: string;
+    plan: ExecutionPlanCard;
+  }): void;
+  (e: "plan-cancel", messageId: string): void;
+  (e: "task-badge-patch", payload: { messageId: string; patch: Partial<TaskBadgeMeta> }): void;
 }>();
 
 const containerRef = ref<HTMLElement | null>(null);

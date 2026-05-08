@@ -524,6 +524,46 @@ export function createExecutionApi(projectId: string, body: ExecutionCreateBody)
   );
 }
 
+// ─── Phase 13 / Task 13.3 — chat ConfirmationCard 派发 ───────────────
+
+/**
+ * "确认执行"按钮调用：仅传 `plan_id`，由后端根据缓存的 plan 反查
+ * `testcase_ids / environment_id / llm_config_id`，避免用户在前端篡改字段
+ * 冒充已确认 plan（设计 §10.3.3 安全闸门）。
+ *
+ * `triggered_chat_session_id` 用于执行完成时把 ✅ 系统消息回流到该会话末尾；
+ * `source` 固定 `chat` 用于历史筛选 + 防 adhoc 污染概览统计。
+ */
+export interface ConfirmExecutionPlanBody {
+  plan_id: string;
+  triggered_chat_session_id: string;
+  /** strict 强度下用户输入的挑战短语（M2 task 13.5 启用，M1 留空即可）。 */
+  challenge_value?: string;
+  /** strict 强度下用户勾选"我已知晓"。M1 留空。 */
+  ack?: boolean;
+}
+
+export function confirmExecutionPlanApi(
+  projectId: string,
+  body: ConfirmExecutionPlanBody,
+) {
+  // 后端 `ExecutionCreateRequest` 通过 plan_id 反查；不送 testcase_ids 是
+  // 故意的——后端会从缓存还原。前端绝不在此处发任何用例 / 环境字段。
+  return request<ApiResponse<ExecutionListItem>>(
+    `/projects/${projectId}/ui-executions`,
+    {
+      method: "POST",
+      body: {
+        plan_id: body.plan_id,
+        triggered_chat_session_id: body.triggered_chat_session_id,
+        source: "chat",
+        // testcase_ids 留空 array，后端按 plan_id 还原
+        testcase_ids: [],
+      },
+    },
+  );
+}
+
 /** 拉取本批次涉及的模块列表（含 entry_path）。给执行配置弹窗的"测试地址"区段用。 */
 export function preflightModulesApi(
   projectId: string,

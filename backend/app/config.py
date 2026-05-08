@@ -17,8 +17,11 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
-    # Encryption (Fernet key: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`)
-    ENCRYPT_KEY: str = "sTOsMs0VqznVBvb3aBWQzqs3UctMQllS9Rf5Ii-JARc="  # dev-only, override in .env
+    # Fernet 对称加密 key：DB 里加密 LLM api_key / UI 登录态 / 物料 secret 等。
+    # 这里的默认值与 ``.env.example`` 保持一致（``cp .env.example .env`` 即可
+    # 开箱即用）。一旦改动会让旧库里所有已加密字段永久解不开 —— 一个部署点
+    # 定下来后**别再动**。生产建议生成独立 key，详见 ``.env.example`` 注释。
+    ENCRYPT_KEY: str = "sTOsMs0VqznVBvb3aBWQzqs3UctMQllS9Rf5Ii-JARc="
 
     # File storage
     UPLOAD_DIR: str = "uploads"

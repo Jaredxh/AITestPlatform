@@ -1,7 +1,20 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+def _strip_or_none(v: str | None) -> str | None:
+    """前端表单字符串去前后空白；None / 空串 → None。
+
+    曾出过 ``" glm-5.1"`` 这种"复制黏贴带空格"的字段被原样落库，导致后续
+    LLM 调用 model 不匹配；统一在入参时清洗，比每个调用点 ``.strip()`` 更
+    可靠。``base_url`` 同理：去掉尾部空白避免 ``urljoin`` 出怪味儿。
+    """
+    if v is None:
+        return None
+    cleaned = v.strip()
+    return cleaned or None
 
 
 class LLMConfigCreateRequest(BaseModel):
@@ -15,6 +28,16 @@ class LLMConfigCreateRequest(BaseModel):
     max_tokens: int = Field(4096, ge=1, le=10_000_000)
     is_default: bool = False
 
+    @field_validator("name", "model", mode="before")
+    @classmethod
+    def _strip_required(cls, v):
+        return v.strip() if isinstance(v, str) else v
+
+    @field_validator("api_key", "base_url", mode="before")
+    @classmethod
+    def _strip_optional(cls, v):
+        return _strip_or_none(v) if isinstance(v, str) else v
+
 
 class LLMConfigUpdateRequest(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=100)
@@ -25,6 +48,16 @@ class LLMConfigUpdateRequest(BaseModel):
     temperature: float | None = Field(None, ge=0.0, le=2.0)
     max_tokens: int | None = Field(None, ge=1, le=10_000_000)
     is_default: bool | None = None
+
+    @field_validator("name", "model", mode="before")
+    @classmethod
+    def _strip_required(cls, v):
+        return v.strip() if isinstance(v, str) else v
+
+    @field_validator("api_key", "base_url", mode="before")
+    @classmethod
+    def _strip_optional(cls, v):
+        return _strip_or_none(v) if isinstance(v, str) else v
 
 
 class LLMConfigResponse(BaseModel):
@@ -86,6 +119,8 @@ class ChatMessageResponse(BaseModel):
     meta_data: dict | None = None
     #: Phase 12 / Task 12.6 — 该消息触发的 skill 调用日志 id（前端 SkillUsageBadge 用）
     skill_invocation_id: uuid.UUID | None = None
+    #: Phase 13 / Task 13.0 — 消息渲染类别（默认 ``'normal'`` 走老气泡）
+    kind: str = "normal"
     created_at: datetime
 
     model_config = {"from_attributes": True}

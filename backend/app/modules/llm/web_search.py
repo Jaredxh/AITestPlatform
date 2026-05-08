@@ -17,7 +17,7 @@ import logging
 import re
 from datetime import datetime, timedelta, timezone
 from html import unescape
-from urllib.parse import quote, unquote, urlparse, parse_qs
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import httpx
 
